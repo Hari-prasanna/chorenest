@@ -5,6 +5,7 @@
   "description": "Roommate cleaning rotation web app on Google Apps Script.",
   "scripts": {
     "login": "clasp login",
+    "test": "node --test \"test/**/*.test.js\"",
     "push:dev": "node scripts/clasp-env.js dev push",
     "deploy:dev": "node scripts/clasp-env.js dev deploy",
     "deploy:prod": "node scripts/clasp-env.js prod deploy"
