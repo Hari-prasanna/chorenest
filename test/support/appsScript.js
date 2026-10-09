@@ -113,9 +113,9 @@ const OWNER = 'owner@example.com';
  * Creates one Apps Script project. `properties` are its Script Properties;
  * `spreadsheets` are every spreadsheet the deploying user can open.
  * `activeUser` is who triggered the execution: the owner in the editor, or a web app visitor
- * ('' when Google hides the visitor's email).
+ * ('' when Google hides the visitor's email). `now` fixes the project's clock.
  */
-function loadProject({ properties = {}, spreadsheets = [], activeUser = OWNER } = {}) {
+function loadProject({ properties = {}, spreadsheets = [], activeUser = OWNER, now } = {}) {
   const opened = [];
   const context = vm.createContext({
     console: { log() {}, error() {} },
@@ -137,8 +137,22 @@ function loadProject({ properties = {}, spreadsheets = [], activeUser = OWNER } 
       getEffectiveUser: () => ({ getEmail: () => OWNER }),
       getScriptTimeZone: () => SCRIPT_TIME_ZONE,
     },
+    LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock() {} }) },
     Utilities: { getUuid: () => crypto.randomUUID() },
   });
+
+  if (now) {
+    vm.runInContext(
+      `(() => {
+        const RealDate = Date;
+        globalThis.Date = class extends RealDate {
+          constructor(...args) { super(...(args.length ? args : [${now.getTime()}])); }
+          static now() { return ${now.getTime()}; }
+        };
+      })();`,
+      context
+    );
+  }
 
   for (const file of fs.readdirSync(BACKEND_DIR).filter((f) => f.endsWith('.js')).sort()) {
     vm.runInContext(fs.readFileSync(path.join(BACKEND_DIR, file), 'utf8'), context, { filename: file });

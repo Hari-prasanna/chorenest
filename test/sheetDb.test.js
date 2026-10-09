@@ -164,7 +164,7 @@ test('admin functions reject web app visitors other than the owner', () => {
       spreadsheets: [new FakeSpreadsheet(DEV_SPREADSHEET_ID)],
       activeUser,
     });
-    for (const name of ['setupDatabase', 'diagnoseDatabase']) {
+    for (const name of ['setupDatabase', 'diagnoseDatabase', 'seedDevRotation']) {
       assert.throws(() => project.get(name)(), /only be run by the script owner/, `${name} as ${JSON.stringify(activeUser)}`);
     }
     assert.deepEqual(project.opened, []);

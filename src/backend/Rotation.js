@@ -75,7 +75,7 @@ function buildRotation_(data) {
   const slots = data.rotation.slice().sort(function (a, b) {
     return a.position - b.position;
   });
-  if (!slots.length) throw new Error('The rotation is empty.');
+  if (!slots.length) throw appError_('ROTATION_EMPTY', 'The rotation is empty.');
   slots.forEach(function (slot, index) {
     if (typeof slot.position !== 'number' || !isFinite(slot.position)) throw new Error('Rotation position must be a number.');
     if (index > 0 && slot.position === slots[index - 1].position) throw new Error('Duplicate rotation position ' + slot.position + '.');
@@ -89,7 +89,7 @@ function buildRotation_(data) {
   data.roommates.forEach(function (roommate) {
     if (roommate.active === true) active[roommate.roommate_id] = true;
   });
-  if (!slots.some(function (slot) { return active[slot.roommate_id]; })) throw new Error('No active roommate is in the rotation.');
+  if (!slots.some(function (slot) { return active[slot.roommate_id]; })) throw appError_('ROTATION_EMPTY', 'No active roommate is in the rotation.');
 
   const vacations = data.vacations.map(function (vacation) {
     const start = toTime_(vacation.start_date, 'start_date');
