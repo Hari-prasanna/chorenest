@@ -1,63 +1,49 @@
 # ChoreNest
 
-A roommate cleaning rotation web app built on Google Apps Script, vanilla JavaScript and Google Sheets.
+Roommate cleaning rotation web app on Google Apps Script, vanilla JavaScript and Google Sheets.
 
-```
-src/
-  appsscript.json     Apps Script manifest
-  backend/            Server-side Apps Script (.js)
-  frontend/           HTML served by HtmlService
-scripts/clasp-env.js  Environment-targeted push and deploy
-```
+- `src/backend/`: Apps Script server code, including the pure rotation engine (`Rotation.js`)
+- `src/frontend/`: HTML served by the web app
+- `scripts/clasp-env.js`: push and deploy for one environment
+- `test/`: Node tests
 
 ## Setup
 
-Requirements: Node.js 18+, and a Google account with the [Apps Script API](https://script.google.com/home/usersettings) enabled.
+Requires Node.js 18+ and the [Apps Script API](https://script.google.com/home/usersettings) enabled for your Google account.
 
-1. Install dependencies and sign in to clasp:
-   ```
-   npm install
-   npm run login
-   ```
-2. Create two standalone Apps Script projects at [script.google.com](https://script.google.com), named for example `ChoreNest DEV` and `ChoreNest PROD`.
-3. In each project, open **Project Settings → Script Properties** and add `ENVIRONMENT` with the value `DEV` or `PROD`.
-4. Create the local config files from the example:
+1. `npm install`, then `npm run login`.
+2. Create two Apps Script projects (DEV and PROD) and two Google Sheets, one per environment. Set each Sheet's time zone to Berlin (**File → Settings**); it must match the script's `Europe/Berlin`.
+3. In each project's **Script Properties**, set `ENVIRONMENT` (`DEV` or `PROD`) and `SPREADSHEET_ID` (the part of the Sheet URL between `/d/` and `/edit`).
+4. Create the gitignored clasp configs and set `scriptId` in each:
    ```
    cp .clasp.example.json .clasp.dev.json
    cp .clasp.example.json .clasp.prod.json
    ```
-   Set `scriptId` in each file (from **Project Settings → IDs**). In `.clasp.prod.json`, set `"environment": "PROD"`.
-5. Run your first deploy for each environment (see below). Copy the deployment ID it prints into that file's `deploymentId`, so future deploys keep the same web app URL.
-
-The `.clasp.*.json` files and clasp credentials are gitignored. Never commit script IDs, deployment IDs or tokens.
+   In `.clasp.prod.json`, also set `"environment": "PROD"`.
+5. Run `npm run deploy:dev`, then copy the deployment ID it prints into `deploymentId` so the web app URL stays the same. Do the same for PROD.
+6. In each project's Apps Script editor, run `setupDatabase` once. It creates missing sheets and headers and never overwrites data.
+7. In DEV, run `diagnoseDatabase` and check for `"ok": true`.
 
 ## Commands
 
-| Command               | Effect                                                         |
-| --------------------- | -------------------------------------------------------------- |
-| `npm run push:dev`    | Push `src/` to the DEV project (updates the `/dev` test URL).  |
-| `npm run deploy:dev`  | Push to DEV and update the DEV web app deployment.             |
-| `npm run deploy:prod` | Push to PROD and update the PROD deployment, after confirmation. |
+| Command               | Effect                                              |
+| --------------------- | --------------------------------------------------- |
+| `npm test`            | Run the Node tests                                  |
+| `npm run push:dev`    | Push `src/` to DEV                                  |
+| `npm run deploy:dev`  | Push to DEV and update the DEV deployment           |
+| `npm run deploy:prod` | Push to PROD and update the deployment, after confirmation |
 
-## Environment isolation
+## Environments
 
-- One source tree (`src/`) is pushed to two separate Apps Script projects. Code is never copied between them.
-- Each project's `ENVIRONMENT` Script Property says which environment it is. If the property is missing or is anything other than `DEV` or `PROD`, the app serves a generic "not available" page and logs the error.
-- DEV pages show a **DEV** badge.
-- `scripts/clasp-env.js` passes the selected environment's config file straight to clasp. There is no shared `.clasp.json`, so a plain `clasp push` fails instead of picking a project.
-- The script refuses to run if:
-  - a config file's `environment` field doesn't match the command;
-  - `rootDir` isn't `src`;
-  - DEV and PROD share a script ID or deployment ID.
+DEV and PROD are separate Apps Script projects and Sheets built from one source tree.
 
-## Deployment
+- A project whose `ENVIRONMENT` is missing or not exactly `DEV` or `PROD` serves an "unavailable" page.
+- Each Sheet is marked with its environment by `setupDatabase`, so one environment refuses to use the other's Sheet.
+- `scripts/clasp-env.js` always targets one environment's config. It refuses mismatched configs or shared script/deployment IDs.
 
-DEV changes are pushed and deployed freely during development.
+## Deploying to PROD
 
-PROD is promoted manually:
+1. Verify the change on DEV and commit it. PROD deploys need a clean working tree.
+2. Run `npm run deploy:prod`, check the script ID, deployment ID and commit shown, and type `PROD` to continue.
 
-1. Verify the change on DEV.
-2. Commit it. PROD deploys are refused if the working tree has uncommitted changes.
-3. Run `npm run deploy:prod`. The script shows the target script ID, deployment ID and commit. Type `PROD` to continue. Nothing is pushed unless you type it.
-
-Each deployment description records the environment and git commit, for example `PROD a1b2c3d`.
+Config files and credentials are gitignored. Never commit script IDs, deployment IDs or tokens.

@@ -1,7 +1,12 @@
 node_modules/
+npm-debug.log*
 
-# clasp environment configs and credentials (contain IDs/tokens)
+# clasp project configs and credentials (contain script IDs and tokens)
 .clasp.json
 .clasp.dev.json
 .clasp.prod.json
 .clasprc.json
+
+.env*
+.DS_Store
+Thumbs.db
