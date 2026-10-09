@@ -1,0 +1,15 @@
+{
+  "name": "chorenest",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Roommate cleaning rotation web app on Google Apps Script.",
+  "scripts": {
+    "login": "clasp login",
+    "push:dev": "node scripts/clasp-env.js dev push",
+    "deploy:dev": "node scripts/clasp-env.js dev deploy",
+    "deploy:prod": "node scripts/clasp-env.js prod deploy"
+  },
+  "devDependencies": {
+    "@google/clasp": "3.3.0"
+  }
+}

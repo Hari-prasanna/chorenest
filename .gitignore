@@ -1,0 +1,7 @@
+node_modules/
+
+# clasp environment configs and credentials (contain IDs/tokens)
+.clasp.json
+.clasp.dev.json
+.clasp.prod.json
+.clasprc.json
