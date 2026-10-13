@@ -20,22 +20,32 @@ function previewTurns_(data, now, count) {
 }
 
 /**
- * The log a future write operation appends when a vacation recorded during the current turn affects its assignee.
- * Run it after the vacation is saved, under a script lock, and append the result only if it is still non-null.
- * The turn counts as resolved, so the queue moves on: no make-up turn, and no priority on return.
- * Returns null when nothing needs skipping, so repeating the operation is harmless.
+ * The vacation_skipped log to append for the current turn, or null. It applies when the assignee has a vacation over
+ * the turn's weekend that was added after the assignment, or when the turn is overdue and the assignee is away right
+ * now (waiting would block everyone until they return). The turn counts as resolved, so the queue moves on: no
+ * make-up turn, and no priority on return. Pure: applyVacationSkips_ records it under a lock.
  */
 function planVacationSkip_(data, now) {
   const turn = getCurrentTurn_(data, now);
-  if (!turn.vacation_conflict_id) return null;
-  return {
+  let vacationId = turn.vacation_conflict_id;
+  if (!vacationId && turn.status === 'overdue') {
+    const time = now.getTime();
+    const away = buildRotation_(data).vacations.find(function (vacation) {
+      return vacation.roommateId === turn.assignee_id && vacation.start <= time && time < vacation.end;
+    });
+    vacationId = away ? away.id : null;
+  }
+  if (!vacationId) return null;
+  const plan = {
     rotation_id: turn.rotation_id,
     roommate_id: turn.assignee_id,
     due_date: turn.due_at,
     outcome: 'vacation_skipped',
     resolved_at: now,
-    notes: 'Skipped for vacation ' + turn.vacation_conflict_id,
+    notes: 'Skipped for vacation ' + vacationId,
   };
+  if (turn.swap_id) plan.swap_id = turn.swap_id;
+  return plan;
 }
 
 /** Accepted swaps that cannot be applied as agreed. They are reported, never moved to other weeks. */
@@ -91,12 +101,20 @@ function buildRotation_(data) {
   });
   if (!slots.some(function (slot) { return active[slot.roommate_id]; })) throw appError_('ROTATION_EMPTY', 'No active roommate is in the rotation.');
 
-  const vacations = data.vacations.map(function (vacation) {
-    const start = toTime_(vacation.start_date, 'start_date');
-    const end = toTime_(vacation.return_date, 'return_date');
-    if (end <= start) throw new Error('Vacation ' + vacation.vacation_id + ' must return after it starts.');
-    return { id: vacation.vacation_id, roommateId: vacation.roommate_id, start: start, end: end, recordedAt: toTime_(vacation.created_at, 'created_at') };
-  });
+  // Vacations are typed into the Sheet by hand. A row that cannot be understood is ignored (see ignoredVacationRows_),
+  // so one typo cannot take the page down. A missing created_at counts as "added after the turn was assigned".
+  const vacations = data.vacations
+    .map(function (vacation, index) {
+      if (!isValidVacation_(vacation)) return null;
+      return {
+        id: vacation.vacation_id || 'vacation-' + (index + 1),
+        roommateId: vacation.roommate_id,
+        start: vacation.start_date.getTime(),
+        end: vacation.return_date.getTime(),
+        recordedAt: isDate_(vacation.created_at) ? vacation.created_at.getTime() : Infinity,
+      };
+    })
+    .filter(Boolean);
 
   const swaps = data.swaps
     .filter(function (swap) {
@@ -132,11 +150,17 @@ function readLogs_(rotation, logs) {
     if (log.swap_id) usedSwapSides[swapSideKey_(log.swap_id, rotation.slots[index].roommate_id)] = true;
     const resolvedAt = toTime_(log.resolved_at, 'resolved_at');
     const dueAt = toTime_(log.due_date, 'due_date');
-    if (!last || resolvedAt >= last.resolvedAt) last = { index: index, resolvedAt: resolvedAt, dueAt: dueAt };
+    if (!last || resolvedAt >= last.resolvedAt) last = { index: index, resolvedAt: resolvedAt, dueAt: dueAt, outcome: log.outcome };
   });
 
   if (last) {
-    const state = { index: (last.index + 1) % rotation.slots.length, opensAt: last.resolvedAt, previousSaturday: saturdayOfDue_(last.dueAt) };
+    // A vacation skip does not use up its weekend: the next roommate can still clean it if it is ahead.
+    const saturday = saturdayOfDue_(last.dueAt);
+    const state = {
+      index: (last.index + 1) % rotation.slots.length,
+      opensAt: last.resolvedAt,
+      previousSaturday: last.outcome === 'vacation_skipped' ? saturday - 7 : saturday,
+    };
     return { state: state, usedSwapSides: usedSwapSides };
   }
   const startedAt = Math.min.apply(null, rotation.slots.map(function (slot) {
@@ -240,6 +264,24 @@ function findVacation_(rotation, roommateId, window, known) {
 
 function overlaps_(vacation, window) {
   return vacation.start < window.end && vacation.end > window.start;
+}
+
+function isDate_(value) {
+  return Object.prototype.toString.call(value) === '[object Date]' && !isNaN(value.getTime());
+}
+
+function isValidVacation_(vacation) {
+  return typeof vacation.roommate_id === 'string' && vacation.roommate_id !== '' && isDate_(vacation.start_date) &&
+    isDate_(vacation.return_date) && vacation.return_date.getTime() > vacation.start_date.getTime();
+}
+
+/** Ids of the vacation rows the engine ignores, so the server log can name them. */
+function ignoredVacationRows_(data) {
+  return data.vacations
+    .map(function (vacation, index) {
+      return isValidVacation_(vacation) ? null : vacation.vacation_id || 'vacation-' + (index + 1);
+    })
+    .filter(Boolean);
 }
 
 function swapSideKey_(swapId, ownerId) {

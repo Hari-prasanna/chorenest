@@ -1,0 +1,121 @@
+<script>
+// Vacation views: data in, HTML strings out. No DOM access, so Node tests can run them. Dates are Berlin time.
+// Vacations are changed under the name picked on the page. That is an unverified claim, not a login.
+const TRUST_NOTE = 'Trust-based for now: anyone with this link can change a vacation for the name picked on the main screen. The selection is not a login and is not verified.';
+const WEEKEND_STATUS_LABELS = { skipped: 'Turn skipped', not_their_turn: 'No turn that weekend', later: 'Not scheduled yet' };
+const VACATION_ERROR_MESSAGES = {
+  UNKNOWN_ROOMMATE: 'That roommate isn’t on the list.',
+  VACATION_DATES_INVALID: 'Pick a first day away and a first day back that are real dates.',
+  VACATION_IN_PAST: 'The first day away can’t be in the past.',
+  VACATION_ORDER: 'The first day back must be after the first day away.',
+  VACATION_TOO_LONG: 'A vacation can last at most 120 days. Please split longer ones.',
+  VACATION_TOO_FAR: 'A vacation can start at most a year ahead.',
+  VACATION_OVERLAP: 'There is already a vacation on those dates.',
+  VACATION_LIMIT: 'Too many vacations are planned. Cancel one first.',
+  VACATION_NOT_FOUND: 'That vacation isn’t there any more.',
+  RECORD_NOT_FOUND: 'That vacation isn’t there any more.',
+  NOT_YOUR_VACATION: 'That vacation belongs to someone else.',
+  VACATION_STARTED: 'A vacation that has started can’t be cancelled here.',
+  VACATION_IN_USE: 'This vacation has already skipped a turn, so it can’t be cancelled here.',
+  BUSY: 'Someone else is saving right now. Please try again in a moment.',
+  WRITE_FAILED: 'We couldn’t save that. Nothing was recorded, so you can try again.',
+};
+
+function vacationErrorMessage(code) {
+  return VACATION_ERROR_MESSAGES[code] || 'Something went wrong, so nothing was saved. Try again.';
+}
+
+/** Today in Berlin as YYYY-MM-DD, the earliest first day away. */
+function todayInBerlin() {
+  const day = berlinParts(Date.now(), { year: 'numeric', month: '2-digit', day: '2-digit' });
+  return day.year + '-' + day.month + '-' + day.day;
+}
+
+function formatVacationDay(iso) {
+  const day = berlinParts(Date.parse(iso), SHORT_DAY);
+  return day.weekday + ' ' + day.day + ' ' + day.month;
+}
+
+function formatVacationDates(vacation) {
+  return formatVacationDay(vacation.start_date) + ' – back ' + formatVacationDay(vacation.return_date);
+}
+
+/** A mistake in the form that can be caught before asking the server, or ''. */
+function vacationFormProblem(start, back) {
+  if (!start || !back) return 'Pick both dates.';
+  return back <= start ? vacationErrorMessage('VACATION_ORDER') : '';
+}
+
+// The card on the main screen.
+function renderVacationEntry() {
+  return '<section class="card vacation-entry" aria-labelledby="vacations-title">' +
+    '<h2 class="eyebrow section-title" id="vacations-title">Vacations</h2>' +
+    '<p class="vacation-intro"><span aria-hidden="true">🏖️</span> Going away? Plan it here and your turns are skipped, with no make-up turn.</p>' +
+    '<button class="button button-quiet" type="button" data-action="open-vacations">See and plan vacations</button></section>';
+}
+
+function renderVacationLoading() {
+  return '<div class="dialog-body dialog-scroll" role="status"><p class="dialog-emoji" aria-hidden="true">🏖️</p>' +
+    '<h2 id="vacation-title">Vacations</h2><p>Loading…</p></div>';
+}
+
+function renderVacationSaving() {
+  return '<div class="dialog-body dialog-scroll" role="status"><p class="dialog-emoji" aria-hidden="true">🏖️</p>' +
+    '<h2 id="vacation-title">Saving…</h2></div>';
+}
+
+function renderVacationProblem(code) {
+  return '<div class="dialog-body dialog-scroll"><p class="dialog-emoji" aria-hidden="true">🧹</p><h2 id="vacation-title">Vacations</h2>' +
+    '<p>' + escapeHtml(code === 'REQUEST_FAILED' ? 'We couldn’t reach the server. Check your connection and try again.' : 'We couldn’t load the vacations. Try again in a moment.') + '</p>' +
+    '<div class="dialog-actions"><button class="button" type="button" data-action="retry-vacations">Try again</button>' +
+    '<button class="button button-quiet" type="button" data-action="close-vacation">Close</button></div></div>';
+}
+
+function renderVacationItem(vacation, selectedId) {
+  const chips = vacation.weekends.length
+    ? '<ul class="chips">' + vacation.weekends.map(function (weekend) {
+      return '<li class="chip' + (weekend.status === 'skipped' ? ' chip-skipped' : '') + '">' + escapeHtml(formatWeekend(weekend)) + ' · ' +
+        escapeHtml(WEEKEND_STATUS_LABELS[weekend.status] || weekend.status) + '</li>';
+    }).join('') + '</ul>'
+    : '<p class="vacation-note">No cleaning weekends affected.</p>';
+  const cancel = selectedId === vacation.roommate_id && vacation.cancellable
+    ? '<button class="button button-quiet" type="button" data-action="cancel-vacation" data-vacation-id="' + escapeHtml(vacation.vacation_id) + '">Cancel vacation</button>'
+    : '';
+  const away = vacation.state === 'away';
+  return '<li class="vacation-item"><div class="turn-head"><p class="name">' + escapeHtml(vacation.name) + '</p>' +
+    '<span class="step' + (away ? ' is-next' : '') + '">' + (away ? 'Away now' : 'Upcoming') + '</span></div>' +
+    '<p class="when"><span aria-hidden="true">🏖️</span> ' + escapeHtml(formatVacationDates(vacation)) + '</p>' + chips + cancel + '</li>';
+}
+
+function renderVacationList(vacations, selectedId, selectedName, notice) {
+  const items = vacations.length
+    ? '<ul class="vacation-list">' + vacations.map(function (vacation) { return renderVacationItem(vacation, selectedId); }).join('') + '</ul>'
+    : '<p class="vacation-note">No vacations planned.</p>';
+  const plan = selectedId
+    ? '<button class="button" type="button" data-action="plan-vacation"><span aria-hidden="true">🏖️</span> Plan a vacation for ' + escapeHtml(selectedName) + '</button>'
+    : '<p class="who-note">Pick your name on the main screen to plan or cancel a vacation.</p>';
+  return '<div class="dialog-body dialog-scroll"><h2 id="vacation-title">Vacations</h2>' + (notice ? renderNotice(notice) : '') +
+    '<p class="who-note">' + escapeHtml(TRUST_NOTE) + '</p>' + items +
+    '<div class="dialog-actions">' + plan + '<button class="button button-quiet" type="button" data-action="close-vacation">Close</button></div></div>';
+}
+
+function renderVacationForm(name, today, draft, error) {
+  return '<div class="dialog-body dialog-scroll"><h2 id="vacation-title">Plan a vacation for ' + escapeHtml(name) + '</h2>' +
+    '<p class="who-note">' + escapeHtml(TRUST_NOTE) + '</p>' +
+    '<div class="field"><label for="vacation-start">First day away</label>' +
+    '<input class="date-input" id="vacation-start" type="date" min="' + escapeHtml(today) + '" value="' + escapeHtml(draft.start || '') + '"></div>' +
+    '<div class="field"><label for="vacation-return">First day back</label>' +
+    '<input class="date-input" id="vacation-return" type="date" min="' + escapeHtml(today) + '" value="' + escapeHtml(draft.back || '') + '"></div>' +
+    (error ? '<p class="form-error" role="alert">' + escapeHtml(error) + '</p>' : '') +
+    '<p class="who-note">Your turns while you are away are skipped, with no make-up turn. The first day back is the first day you can clean again.</p>' +
+    '<div class="dialog-actions"><button class="button" type="button" data-action="save-vacation">Save vacation</button>' +
+    '<button class="button button-quiet" type="button" data-action="back-to-vacations">Back</button></div></div>';
+}
+
+function renderVacationCancelConfirm(vacation) {
+  return '<div class="dialog-body dialog-scroll"><p class="dialog-emoji" aria-hidden="true">🏖️</p><h2 id="vacation-title">Cancel this vacation?</h2>' +
+    '<p>' + escapeHtml(vacation.name) + ': ' + escapeHtml(formatVacationDates(vacation)) + '. Your turns in that time will count again.</p>' +
+    '<div class="dialog-actions"><button class="button" type="button" data-action="confirm-cancel-vacation">Yes, cancel it</button>' +
+    '<button class="button button-quiet" type="button" data-action="back-to-vacations" autofocus>Keep it</button></div></div>';
+}
+</script>

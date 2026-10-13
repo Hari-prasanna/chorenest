@@ -1,29 +1,94 @@
 <script>
 // Page wiring: loads the schedule through google.script.run and shows the loading, empty, error or schedule view.
 const appElement = document.getElementById('app');
+const dialogElement = document.getElementById('confirm-dialog');
+const vacationDialog = document.getElementById('vacation-dialog');
+const profileDialog = document.getElementById('profile-dialog');
+const profileButton = document.getElementById('profile-button');
+const betaNotice = document.getElementById('beta-notice');
+const tabsElement = document.getElementById('tabs');
+const panels = {
+  schedule: document.getElementById('panel-schedule'),
+  vacation: document.getElementById('panel-vacation'),
+  swaps: document.getElementById('panel-swaps'),
+  history: document.getElementById('panel-history'),
+};
 let currentSchedule = null;
 let selectedRoommateId = readSelectedRoommate();
+let pendingClean = null;
+let saving = false;
+let notice = null;
+let loadedAt = 0;
+const STALE_AFTER_MS = 5 * 60 * 1000; // Coming back to Schedule after this long fetches a fresh copy.
+let vacations = null;
+let vacationDraft = { start: '', back: '' };
+let pendingVacationCancel = null;
+let vacationBusy = false;
 
 function show(html, busy) {
+  panels.schedule.setAttribute('data-settled', 'false'); // New content gets its entrance animation once.
   appElement.innerHTML = html;
   appElement.setAttribute('aria-busy', busy ? 'true' : 'false');
 }
 
 function showResult(result) {
   currentSchedule = isValidSchedule(result) ? result : null;
+  if (currentSchedule) loadedAt = Date.now();
   if (currentSchedule && selectedRoommateId !== validSelection(currentSchedule, selectedRoommateId)) {
     selectedRoommateId = null;
     saveSelectedRoommate(null); // That roommate was removed or deactivated.
   }
   try {
-    show(renderResult(result, selectedRoommateId), false);
+    show(renderResult(result, selectedRoommateId, notice), false);
   } catch (error) {
     show(renderProblem('UNEXPECTED_RESPONSE'), false);
   }
+  notice = null; // A banner is shown once, with the refreshed schedule.
+  refreshProfile();
 }
 
 function showRequestFailure() {
+  notice = null;
   show(renderProblem('REQUEST_FAILED'), false);
+}
+
+// The profile entry only reports what the page knows: a picked name (not verified) or nothing.
+function refreshProfile() {
+  profileButton.innerHTML = renderProfileButton(currentSchedule, selectedRoommateId);
+  profileButton.setAttribute('aria-label', profileLabel(currentSchedule, selectedRoommateId));
+}
+
+// Navigation only shows and hides sections, so switching is instant and sends nothing. Leaving the schedule marks it
+// settled, so coming back doesn't replay the entrance animation. Only an old schedule is fetched again.
+function selectTab(tab) {
+  if (TABS.indexOf(tab) === -1) return;
+  if (!panels.schedule.hidden) panels.schedule.setAttribute('data-settled', 'true');
+  TABS.forEach(function (name) {
+    panels[name].hidden = name !== tab;
+  });
+  Array.from(tabsElement.querySelectorAll('[data-tab]')).forEach(function (button) {
+    button.setAttribute('aria-current', button.getAttribute('data-tab') === tab ? 'page' : 'false');
+  });
+  if (tab === 'schedule' && currentSchedule && !saving && Date.now() - loadedAt > STALE_AFTER_MS) loadSchedule();
+}
+
+function showBetaNoticeOnce() {
+  if (readStored(BETA_STORAGE_KEY) === 'dismissed') return;
+  betaNotice.innerHTML = renderBetaNotice();
+  betaNotice.hidden = false;
+}
+
+function dismissBetaNotice() {
+  writeStored(BETA_STORAGE_KEY, 'dismissed');
+  betaNotice.innerHTML = '';
+  betaNotice.hidden = true;
+}
+
+function changeName() {
+  profileDialog.close();
+  selectTab('schedule');
+  const select = document.getElementById('who-select');
+  if (select && select.focus) select.focus();
 }
 
 function loadSchedule() {
@@ -34,18 +99,231 @@ function loadSchedule() {
     .getRotationSchedule();
 }
 
+function openConfirm() {
+  const turn = currentSchedule && markableTurn(currentSchedule, selectedRoommateId);
+  if (!turn || saving) return;
+  pendingClean = { roommate_id: selectedRoommateId, rotation_id: turn.rotation_id, due_at: turn.due_at };
+  dialogElement.innerHTML = renderConfirmDialog(currentSchedule, selectedRoommateId);
+  dialogElement.showModal();
+}
+
+function finishClean(result) {
+  saving = false;
+  pendingClean = null;
+  notice = result;
+  dialogElement.close();
+  loadSchedule(); // Always refresh, so the page shows what the Sheet really says.
+}
+
+// The dialog is replaced by "Saving…" at once, so a second click cannot send a second request.
+function submitClean() {
+  if (!pendingClean || saving) return;
+  saving = true;
+  const request = pendingClean;
+  const name = rosterName(currentSchedule, request.roommate_id);
+  dialogElement.innerHTML = renderSaving();
+  google.script.run
+    .withSuccessHandler(function (result) {
+      finishClean(cleanNotice(result, name));
+    })
+    .withFailureHandler(function () {
+      finishClean(unknownCleanNotice());
+    })
+    .markCleaned(request);
+}
+
+// A tap can land on an icon inside a button, so the click is traced back to the element that carries the attribute.
+function carrier(event, selector) {
+  const target = event.target;
+  if (!target) return null;
+  const found = target.closest ? target.closest(selector) : target;
+  return found && found.getAttribute ? found : null;
+}
+
+function actionOf(event) {
+  const source = carrier(event, '[data-action]');
+  return source ? source.getAttribute('data-action') : null;
+}
+
+// Vacations: loaded when the dialog opens. Changes are made under the picked name, which is an unverified claim.
+function pickedName() {
+  return currentSchedule && validSelection(currentSchedule, selectedRoommateId) ? rosterName(currentSchedule, selectedRoommateId) : null;
+}
+
+function showVacationDialog(html) {
+  vacationDialog.innerHTML = html;
+  if (!vacationDialog.open) vacationDialog.showModal();
+}
+
+function showVacationList(result, vacationNotice) {
+  if (!(result && result.ok === true && Array.isArray(result.vacations))) {
+    showVacationDialog(renderVacationProblem(result && result.error ? result.error.code : 'UNEXPECTED_RESPONSE'));
+    return;
+  }
+  vacations = result.vacations;
+  try {
+    showVacationDialog(renderVacationList(vacations, pickedName() ? selectedRoommateId : null, pickedName(), vacationNotice));
+  } catch (error) {
+    showVacationDialog(renderVacationProblem('UNEXPECTED_RESPONSE'));
+  }
+}
+
+function loadVacations(vacationNotice) {
+  google.script.run
+    .withSuccessHandler(function (result) {
+      showVacationList(result, vacationNotice);
+    })
+    .withFailureHandler(function () {
+      showVacationDialog(renderVacationProblem('REQUEST_FAILED'));
+    })
+    .listVacations();
+}
+
+function openVacations() {
+  if (!currentSchedule || vacationBusy) return;
+  showVacationDialog(renderVacationLoading());
+  loadVacations(null);
+}
+
+function planVacation() {
+  const name = pickedName();
+  if (name && !vacationBusy) showVacationDialog(renderVacationForm(name, todayInBerlin(), vacationDraft, ''));
+}
+
+// After a change the schedule is reloaded behind the dialog, and the list shows what the Sheet now says.
+function afterVacationChange(result, successText) {
+  vacationBusy = false;
+  if (result && result.ok === true) {
+    vacationDraft = { start: '', back: '' };
+    loadSchedule();
+    loadVacations({ kind: 'success', text: successText });
+    return;
+  }
+  loadVacations(result && result.ok === false && result.error
+    ? { kind: 'error', text: vacationErrorMessage(result.error.code) }
+    : { kind: 'info', text: 'We couldn’t confirm that it saved. Check the list before trying again.' });
+}
+
+function submitVacation() {
+  const name = pickedName();
+  if (!name || vacationBusy) return;
+  vacationDraft = { start: document.getElementById('vacation-start').value, back: document.getElementById('vacation-return').value };
+  const problem = vacationFormProblem(vacationDraft.start, vacationDraft.back);
+  if (problem) {
+    showVacationDialog(renderVacationForm(name, todayInBerlin(), vacationDraft, problem));
+    return;
+  }
+  vacationBusy = true;
+  showVacationDialog(renderVacationSaving());
+  google.script.run
+    .withSuccessHandler(function (result) {
+      if (result && result.ok === false && result.error) {
+        vacationBusy = false;
+        showVacationDialog(renderVacationForm(name, todayInBerlin(), vacationDraft, vacationErrorMessage(result.error.code)));
+        return;
+      }
+      afterVacationChange(result, 'Vacation saved. Your turns while you are away are skipped.');
+    })
+    .withFailureHandler(function () {
+      afterVacationChange(null, '');
+    })
+    .saveVacation({ roommate_id: selectedRoommateId, start_date: vacationDraft.start, return_date: vacationDraft.back });
+}
+
+function askCancelVacation(vacationId) {
+  const vacation = vacations && vacations.find(function (candidate) {
+    return candidate.vacation_id === vacationId;
+  });
+  if (!vacation || vacationBusy || !pickedName() || vacation.roommate_id !== selectedRoommateId || !vacation.cancellable) return;
+  pendingVacationCancel = vacation;
+  showVacationDialog(renderVacationCancelConfirm(vacation));
+}
+
+function confirmCancelVacation() {
+  if (!pendingVacationCancel || vacationBusy || !pickedName()) return;
+  const request = { roommate_id: selectedRoommateId, vacation_id: pendingVacationCancel.vacation_id };
+  pendingVacationCancel = null;
+  vacationBusy = true;
+  showVacationDialog(renderVacationSaving());
+  google.script.run
+    .withSuccessHandler(function (result) {
+      afterVacationChange(result, 'Vacation cancelled.');
+    })
+    .withFailureHandler(function () {
+      afterVacationChange(null, '');
+    })
+    .cancelVacation(request);
+}
+
 appElement.addEventListener('click', function (event) {
-  if (event.target && event.target.getAttribute && event.target.getAttribute('data-action') === 'retry') loadSchedule();
+  const action = actionOf(event);
+  if (action === 'retry') loadSchedule();
+  if (action === 'mark-cleaned') openConfirm();
 });
 
-// Replaces only the greeting text, so the picker keeps keyboard focus.
+panels.vacation.addEventListener('click', function (event) {
+  if (actionOf(event) === 'open-vacations') openVacations();
+});
+
+tabsElement.addEventListener('click', function (event) {
+  const button = carrier(event, '[data-tab]');
+  selectTab(button ? button.getAttribute('data-tab') : null);
+});
+
+betaNotice.addEventListener('click', function (event) {
+  if (actionOf(event) === 'dismiss-beta') dismissBetaNotice();
+});
+
+profileButton.addEventListener('click', function () {
+  profileDialog.innerHTML = renderProfileDialog(currentSchedule, selectedRoommateId);
+  profileDialog.showModal();
+});
+
+profileDialog.addEventListener('click', function (event) {
+  const action = actionOf(event);
+  if (action === 'change-name') changeName();
+  if (action === 'close-profile') profileDialog.close();
+});
+
+vacationDialog.addEventListener('click', function (event) {
+  const action = actionOf(event);
+  if (action === 'retry-vacations') openVacations();
+  if (action === 'plan-vacation') planVacation();
+  if (action === 'save-vacation') submitVacation();
+  if (action === 'cancel-vacation') askCancelVacation(carrier(event, '[data-action]').getAttribute('data-vacation-id'));
+  if (action === 'confirm-cancel-vacation') confirmCancelVacation();
+  if (action === 'back-to-vacations') {
+    pendingVacationCancel = null;
+    showVacationList({ ok: true, vacations: vacations || [] }, null);
+  }
+  if (action === 'close-vacation') {
+    vacationDraft = { start: '', back: '' };
+    pendingVacationCancel = null;
+    vacationDialog.close();
+  }
+});
+
+dialogElement.addEventListener('click', function (event) {
+  const action = actionOf(event);
+  if (action === 'confirm-clean') submitClean();
+  if (action === 'cancel-clean') dialogElement.close();
+});
+
+// Replaces only the greeting and the action slot, so the picker keeps keyboard focus.
 appElement.addEventListener('change', function (event) {
   if (!currentSchedule || !event.target || event.target.getAttribute('data-action') !== 'select-roommate') return;
   selectedRoommateId = validSelection(currentSchedule, event.target.value);
   saveSelectedRoommate(selectedRoommateId);
   document.getElementById('who-text').innerHTML = renderIdentityText(currentSchedule, selectedRoommateId);
+  document.getElementById('mark-action').innerHTML = renderMarkAction(markableTurn(currentSchedule, selectedRoommateId) !== null);
+  refreshProfile();
 });
 
+panels.vacation.innerHTML = renderVacationPage();
+panels.swaps.innerHTML = renderWorkInProgress('swaps');
+panels.history.innerHTML = renderWorkInProgress('history');
+refreshProfile();
+showBetaNoticeOnce();
 bindThemeToggle(document.getElementById('theme-toggle'));
 loadSchedule();
 </script>

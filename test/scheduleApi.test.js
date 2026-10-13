@@ -57,7 +57,7 @@ test('returns the current turn and the next three, as computed by the rotation e
   const result = schedule(project);
 
   assert.equal(result.ok, true);
-  assert.equal(result.environment, 'DEV');
+  assert.equal('environment' in result, false, 'the environment name is not exposed');
   assert.equal(result.generated_at, NOW.toISOString());
   assert.equal(result.current.owner.name, 'Sam Example');
   assert.equal(result.current.assignee.name, 'Alex Example');
@@ -116,7 +116,7 @@ test('PROD reads its own spreadsheet', () => {
     spreadsheets: [fixtureSpreadsheet(), fixtureSpreadsheet({ id: PROD_SPREADSHEET_ID, marker: 'PROD' })],
     now: NOW,
   });
-  assert.equal(schedule(project).environment, 'PROD');
+  assert.equal(schedule(project).ok, true);
   assert.deepEqual(project.opened, [PROD_SPREADSHEET_ID]);
 });
 
@@ -167,7 +167,8 @@ test('a missing sheet or column asks for setupDatabase; other header problems ar
   const oldSwaps = [[...swapHeaders, 'due_date'], ...swapRows.map((row) => [...row, ''])];
   const result = schedule(devProject(fixtureSpreadsheet({ sheets: { SWAPS: oldSwaps } })));
   assert.equal(result.error.code, 'SCHEMA_INVALID');
-  assert.match(result.error.message, /unknown column: due_date/);
+  assert.equal(result.error.message, 'ChoreNest isn’t set up correctly.');
+  assert.doesNotMatch(JSON.stringify(result), /due_date|SWAPS|column/, 'sheet and column names stay in the server log');
 });
 
 // Empty database and invalid rotation data
@@ -180,18 +181,16 @@ test('an empty database is ROTATION_EMPTY', () => {
   assert.equal(errorCode(devProject(fixtureSpreadsheet({ sheets: { ROOMMATES: inactive } }))), 'ROTATION_EMPTY');
 });
 
-test('invalid rotation data is ROTATION_DATA_INVALID with the engine\'s reason', () => {
+test('invalid rotation data is ROTATION_DATA_INVALID, and the reason stays in the server log', () => {
   const cases = [
     [{ ROTATION: sheetWith('ROTATION', (s) => ({ ...s, position: 1 })) }, /Duplicate rotation position 1/],
     [{ ROTATION: sheetWith('ROTATION', (s) => ({ ...s, position: String(s.position) })) }, /position must be a number/],
     [{ CLEANING_LOGS: sheetWith('CLEANING_LOGS', (l) => ({ ...l, completed_at: '' })) }, /completed_at is required/],
-    [{ VACATIONS: sheetWith('VACATIONS', (v) => ({ ...v, return_date: 'next week' })) }, /return_date must be a date/],
   ];
-  for (const [sheets, message] of cases) {
+  for (const [sheets, reason] of cases) {
     const result = schedule(devProject(fixtureSpreadsheet({ sheets })));
-    assert.equal(result.ok, false);
-    assert.equal(result.error.code, 'ROTATION_DATA_INVALID');
-    assert.match(result.error.message, message);
+    assert.deepEqual(result, { ok: false, error: { code: 'ROTATION_DATA_INVALID', message: 'The rotation data needs attention.' } });
+    assert.doesNotMatch(JSON.stringify(result), reason);
   }
 });
 

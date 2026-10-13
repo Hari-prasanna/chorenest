@@ -149,13 +149,71 @@ function renderIdentity(schedule, selectedId) {
     '<p class="who-note">Just for a friendly greeting. This isn’t a login.</p></section>';
 }
 
+function rosterName(schedule, roommateId) {
+  const roommate = schedule.roommates.find(function (candidate) {
+    return candidate.roommate_id === roommateId;
+  });
+  return roommate ? displayName(roommate) : 'there';
+}
+
+// The button is only a convenience for the picked roommate. The server decides whether the claim is accepted.
+function markableTurn(schedule, selectedId) {
+  const current = schedule.current;
+  const open = current.status === 'pending' || current.status === 'overdue';
+  return validSelection(schedule, selectedId) && open && current.assignee.roommate_id === selectedId ? current : null;
+}
+
+function renderMarkAction(canMark) {
+  return canMark ? '<button class="button mark-button" type="button" data-action="mark-cleaned"><span aria-hidden="true">🧹</span> Mark as cleaned</button>' : '';
+}
+
+function renderConfirmDialog(schedule, selectedId) {
+  return '<div class="dialog-body"><p class="dialog-emoji" aria-hidden="true">🧹</p>' +
+    '<h2 id="confirm-title">Mark ' + escapeHtml(TASK_NAME) + ' as cleaned?</h2>' +
+    '<p>' + escapeHtml(rosterName(schedule, selectedId)) + ', you’re telling everyone the whole home is clean. ' +
+    'It’s saved for the household and can’t be undone from the app.</p>' +
+    '<div class="dialog-actions">' +
+    '<button class="button" type="button" data-action="confirm-clean">Yes, it’s clean <span aria-hidden="true">✨</span></button>' +
+    '<button class="button button-quiet" type="button" data-action="cancel-clean" autofocus>Not yet</button></div></div>';
+}
+
+function renderSaving() {
+  return '<div class="dialog-body" role="status"><p class="dialog-emoji" aria-hidden="true">🧹</p><h2 id="confirm-title">Saving…</h2></div>';
+}
+
+const CLEAN_ERROR_MESSAGES = {
+  NOT_YOUR_TURN: 'It isn’t your turn right now, so nothing was saved.',
+  STALE_TURN: 'The schedule changed while you were looking. Here’s the latest.',
+  ALREADY_RECORDED: 'That turn was already marked as done. Here’s the latest.',
+  TURN_NOT_OPEN: 'That turn isn’t open yet, so nothing was saved.',
+  BUSY: 'Someone else is saving right now. Please try again in a moment.',
+  WRITE_FAILED: 'We couldn’t save that. Nothing was recorded, so you can try again.',
+};
+
+function unknownCleanNotice() {
+  return { kind: 'info', text: 'We couldn’t confirm that it saved. Check the schedule below before trying again.' };
+}
+
+function cleanNotice(result, name) {
+  if (result && result.ok === true) return { kind: 'success', text: 'Nice work, ' + name + '! ' + TASK_NAME + ' is marked as cleaned.' };
+  if (result && result.ok === false && result.error) {
+    return { kind: 'error', text: CLEAN_ERROR_MESSAGES[result.error.code] || 'Something went wrong, so nothing was saved. Try again.' };
+  }
+  return unknownCleanNotice();
+}
+
+function renderNotice(notice) {
+  return '<p class="notice notice-' + escapeHtml(notice.kind) + '" role="' + (notice.kind === 'error' ? 'alert' : 'status') + '">' +
+    (notice.kind === 'success' ? '<span aria-hidden="true">✨</span> ' : '') + escapeHtml(notice.text) + '</p>';
+}
+
 function renderBadge(status) {
   const known = Boolean(STATUS_LABELS[status]);
   return '<span class="badge badge-' + (known ? status : 'waiting') + '"><span aria-hidden="true">' +
     (STATUS_GLYPHS[status] || STATUS_GLYPHS.waiting) + '</span>' + escapeHtml(known ? STATUS_LABELS[status] : status) + '</span>';
 }
 
-function renderCurrentTurn(turn) {
+function renderCurrentTurn(turn, canMark) {
   const status = STATUS_LABELS[turn.status] ? turn.status : 'waiting';
   const overdue = status === 'overdue';
   return '<section class="card hero' + (overdue ? ' is-overdue' : '') + '" aria-labelledby="current-title">' +
@@ -168,7 +226,8 @@ function renderCurrentTurn(turn) {
     '<dl class="facts">' +
     '<div><dt>Cleaning weekend</dt><dd>' + escapeHtml(formatWeekend(turn)) + '</dd></div>' +
     '<div><dt>' + (overdue ? 'Was due' : 'Due') + '</dt><dd>' + escapeHtml('End of ' + formatDueDay(turn)) + '</dd></div></dl>' +
-    turnNotes(turn) + '</section>';
+    turnNotes(turn) +
+    '<div id="mark-action">' + renderMarkAction(canMark) + '</div></section>';
 }
 
 function renderUpcomingTurns(turns) {
@@ -183,8 +242,9 @@ function renderUpcomingTurns(turns) {
     '<h2 class="eyebrow section-title" id="upcoming-title">Coming up</h2><ol class="timeline">' + items + '</ol></section>';
 }
 
-function renderSchedule(schedule, selectedId) {
-  return '<div class="layout">' + renderIdentity(schedule, selectedId) + renderCurrentTurn(schedule.current) + renderUpcomingTurns(schedule.upcoming) +
+function renderSchedule(schedule, selectedId, notice) {
+  return '<div class="layout">' + (notice ? renderNotice(notice) : '') + renderIdentity(schedule, selectedId) +
+    renderCurrentTurn(schedule.current, markableTurn(schedule, selectedId) !== null) + renderUpcomingTurns(schedule.upcoming) +
     '<p class="footnote">Updated ' + escapeHtml(formatTimestamp(schedule.generated_at)) + ' · Times in Berlin</p></div>';
 }
 
@@ -233,8 +293,8 @@ function isValidSchedule(result) {
     Array.isArray(result.roommates) && result.roommates.every(isValidPerson);
 }
 
-function renderResult(result, selectedId) {
+function renderResult(result, selectedId, notice) {
   if (result && result.ok === false && result.error) return renderProblem(result.error.code);
-  return isValidSchedule(result) ? renderSchedule(result, selectedId) : renderProblem('UNEXPECTED_RESPONSE');
+  return isValidSchedule(result) ? renderSchedule(result, selectedId, notice) : renderProblem('UNEXPECTED_RESPONSE');
 }
 </script>

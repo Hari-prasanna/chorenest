@@ -22,6 +22,7 @@
     --focus: #0f766e;
     --shadow: 0 1px 2px rgba(23, 42, 51, 0.06), 0 8px 24px rgba(23, 42, 51, 0.06);
     --shadow-hero: 0 2px 4px rgba(10, 94, 89, 0.18), 0 18px 40px rgba(10, 94, 89, 0.22);
+    --backdrop: rgba(14, 21, 29, 0.55);
 
     /* Hero card: the current cleaner. Overdue swaps in the coral set. */
     --hero-a: #0a5e59;
@@ -76,6 +77,7 @@
     --focus: #5eead4;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 8px 24px rgba(0, 0, 0, 0.3);
     --shadow-hero: 0 2px 4px rgba(0, 0, 0, 0.4), 0 18px 40px rgba(0, 0, 0, 0.45);
+    --backdrop: rgba(0, 0, 0, 0.65);
 
     --hero-a: #0f3f4a;
     --hero-b: #17696b;
@@ -123,10 +125,14 @@
     font: inherit;
   }
 
+  [hidden] {
+    display: none !important;
+  }
+
   .page {
     max-width: 720px;
     margin: 0 auto;
-    padding: 16px 16px 48px;
+    padding: 16px 16px 104px;
   }
 
   /* Header */
@@ -178,6 +184,66 @@
     font-weight: 700;
   }
 
+  .beta-badge {
+    padding: 1px 8px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--neutral-bg);
+    color: var(--neutral-text);
+    font-size: 0.6875rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .top-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .profile {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    max-width: 100%;
+    min-height: 44px;
+    padding: 4px 14px 4px 6px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: var(--shadow);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .profile-text {
+    display: grid;
+    min-width: 0;
+    line-height: 1.2;
+  }
+
+  .profile-name {
+    overflow: hidden;
+    max-width: 9rem;
+    font-size: 0.875rem;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .profile-state {
+    color: var(--muted);
+    font-size: 0.75rem;
+  }
+
+  .profile-who {
+    font-size: 1.125rem;
+    overflow-wrap: anywhere;
+  }
+
   .theme-toggle {
     display: inline-flex;
     padding: 4px;
@@ -205,6 +271,90 @@
     font-weight: 700;
   }
 
+  /* Section navigation: a bottom bar on phones, a row under the header on wider screens */
+  .tabs {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 5;
+    display: flex;
+    gap: 4px;
+    padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+  }
+
+  .tab {
+    flex: 1 1 0;
+    display: grid;
+    justify-items: center;
+    align-content: center;
+    gap: 2px;
+    min-height: 52px;
+    padding: 4px 2px;
+    border: 0;
+    border-radius: 16px;
+    background: transparent;
+    color: var(--muted);
+    font-size: 0.75rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .tab-icon {
+    font-size: 1.25rem;
+    line-height: 1;
+  }
+
+  .tab[aria-current="page"] {
+    background: var(--accent-soft);
+    color: var(--accent-text);
+    font-weight: 700;
+  }
+
+  .beta-notice {
+    margin: 4px 0 14px;
+    padding: 12px 16px;
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    background: var(--note-bg);
+    color: var(--text);
+  }
+
+  .beta-notice-body {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px 16px;
+  }
+
+  .beta-notice p {
+    flex: 1 1 16rem;
+    margin: 0;
+  }
+
+  .panel-title {
+    margin: 0 0 12px;
+    font-size: 1.5rem;
+    letter-spacing: -0.02em;
+  }
+
+  .wip .panel-title {
+    margin-bottom: 8px;
+  }
+
+  .wip-badge {
+    display: inline-block;
+    padding: 3px 12px;
+    border-radius: 999px;
+    background: var(--neutral-bg);
+    color: var(--neutral-text);
+    font-size: 0.8125rem;
+    font-weight: 700;
+  }
+
   .tagline {
     margin: 6px 0 22px;
     color: var(--muted);
@@ -214,6 +364,7 @@
   /* Greeting and "who are you?" picker */
   .who {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 12px;
   }
 
@@ -247,6 +398,7 @@
   .who-select {
     min-height: 44px;
     max-width: 100%;
+    text-overflow: ellipsis;
     padding: 8px 14px;
     border: 1px solid var(--border);
     border-radius: 999px;
@@ -265,6 +417,7 @@
   /* Cards */
   .layout {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 28px;
   }
 
@@ -407,6 +560,17 @@
     height: 76px;
     font-size: 2rem;
     box-shadow: 0 0 0 5px var(--hero-ring);
+  }
+
+  .avatar-sm {
+    width: 32px;
+    height: 32px;
+    font-size: 0.9375rem;
+  }
+
+  .avatar-none {
+    background: var(--neutral-bg);
+    color: var(--neutral-text);
   }
 
   .avatar-md {
@@ -598,13 +762,196 @@
     cursor: pointer;
   }
 
+  .button-quiet {
+    border: 1px solid var(--border);
+    background: var(--surface-soft);
+    color: var(--text);
+  }
+
+  .mark-button {
+    width: 100%;
+    margin-top: 18px;
+    background: var(--tile);
+    color: var(--tile-text);
+    font-size: 1.0625rem;
+  }
+
+  /* Banner after saving, and the confirmation dialog */
+  .notice {
+    margin: 0;
+    padding: 12px 18px;
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    font-weight: 600;
+  }
+
+  .notice-success {
+    background: var(--accent-soft);
+    color: var(--accent-text);
+  }
+
+  .notice-info {
+    background: var(--note-bg);
+    color: var(--text);
+  }
+
+  .notice-error {
+    background: var(--overdue-tile);
+    color: var(--overdue-tile-text);
+  }
+
+  .dialog {
+    width: min(92vw, 420px);
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 28px;
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: var(--shadow-hero);
+  }
+
+  .dialog::backdrop {
+    background: var(--backdrop);
+  }
+
+  .dialog-body {
+    padding: 28px 24px 24px;
+    text-align: center;
+  }
+
+  .dialog-emoji {
+    margin: 0 0 6px;
+    font-size: 2.5rem;
+  }
+
+  .dialog-body h2 {
+    margin: 0 0 8px;
+    font-size: 1.375rem;
+    letter-spacing: -0.01em;
+  }
+
+  .dialog-body p {
+    margin: 0 auto 20px;
+    color: var(--muted);
+  }
+
+  .dialog-actions {
+    display: grid;
+    gap: 10px;
+  }
+
+  /* Vacations */
+  .vacation-entry .vacation-intro {
+    margin: 0 0 14px;
+    color: var(--muted);
+  }
+
+  .dialog-wide {
+    width: min(94vw, 520px);
+  }
+
+  .dialog-scroll {
+    max-height: 82vh;
+    overflow-y: auto;
+    text-align: left;
+  }
+
+  .dialog-scroll .dialog-actions {
+    margin-top: 16px;
+  }
+
+  .vacation-list,
+  .chips {
+    display: grid;
+    gap: 10px;
+    margin: 12px 0 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .vacation-item {
+    padding: 14px 16px;
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    background: var(--surface-soft);
+  }
+
+  .vacation-item .button {
+    margin-top: 12px;
+  }
+
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 10px;
+  }
+
+  .chip {
+    padding: 3px 10px;
+    border-radius: 999px;
+    background: var(--neutral-bg);
+    color: var(--neutral-text);
+    font-size: 0.8125rem;
+    font-weight: 600;
+  }
+
+  .chip-skipped {
+    background: var(--accent-soft);
+    color: var(--accent-text);
+  }
+
+  .vacation-note {
+    margin: 12px 0 0;
+    color: var(--muted);
+  }
+
+  .field {
+    display: grid;
+    gap: 6px;
+    margin-top: 14px;
+  }
+
+  .field label {
+    color: var(--muted);
+    font-size: 0.875rem;
+    font-weight: 600;
+  }
+
+  .date-input {
+    min-height: 44px;
+    padding: 8px 14px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+  }
+
+  .date-input:focus-visible {
+    outline: 3px solid var(--focus);
+    outline-offset: 2px;
+  }
+
+  .form-error {
+    margin: 14px 0 0;
+    padding: 8px 12px;
+    border-radius: 12px;
+    background: var(--overdue-tile);
+    color: var(--overdue-tile-text);
+    font-weight: 600;
+  }
+
   /* Press and focus (instant, so they also work with reduced motion) */
   .button:active,
+  .mark-button:active,
   .theme-toggle button:active {
     transform: scale(0.96);
   }
 
   .theme-toggle button:focus-visible,
+  .tab:focus-visible,
+  .profile:focus-visible,
   .button:focus-visible,
   .who-select:focus-visible {
     outline: 3px solid var(--focus);
@@ -645,12 +992,32 @@
       color: var(--text);
     }
 
+    .tab:hover {
+      background: var(--neutral-bg);
+    }
+
+    .tab[aria-current="page"]:hover {
+      background: var(--accent-soft);
+    }
+
+    .profile:hover {
+      border-color: var(--accent);
+    }
+
     .theme-toggle button[aria-pressed="true"]:hover {
       color: var(--on-solid);
     }
 
     .button:hover {
       background: var(--solid-hover);
+    }
+
+    .button-quiet:hover {
+      background: var(--neutral-bg);
+    }
+
+    .hero .mark-button:hover {
+      background: var(--on-hero);
     }
 
     .who-select:hover {
@@ -668,6 +1035,7 @@
     .card,
     .theme-toggle,
     .theme-toggle button,
+    .profile,
     .who-select,
     .when,
     .step,
@@ -680,6 +1048,12 @@
     .hero,
     .timeline-item {
       animation: rise 0.35s ease-out both;
+    }
+
+    /* Returning to the schedule from another tab shows it at once. */
+    [data-settled="true"] .hero,
+    [data-settled="true"] .timeline-item {
+      animation: none;
     }
 
     .timeline-item:nth-child(2) {
@@ -703,8 +1077,27 @@
     }
   }
 
+  /* Narrow phones: the theme choice and the profile entry share one row under the brand. */
+  @media (max-width: 479px) {
+    .theme-toggle button {
+      padding: 2px 10px;
+    }
+
+    .profile {
+      padding-right: 10px;
+    }
+
+    .profile-name {
+      max-width: 5.5rem;
+    }
+  }
+
   @media (min-width: 480px) {
     .hero .facts {
+      grid-template-columns: 1fr 1fr;
+    }
+
+    .dialog-actions {
       grid-template-columns: 1fr 1fr;
     }
   }
@@ -712,6 +1105,31 @@
   @media (min-width: 760px) {
     .page {
       padding: 40px 24px 64px;
+    }
+
+    .tabs {
+      position: static;
+      width: fit-content;
+      margin: 8px 0 18px;
+      padding: 4px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+
+    .tab {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 40px;
+      padding: 4px 18px;
+      border-radius: 999px;
+      font-size: 0.9375rem;
+    }
+
+    .tab-icon {
+      font-size: 1rem;
     }
 
     .hero {

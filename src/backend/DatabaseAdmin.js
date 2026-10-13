@@ -1,12 +1,20 @@
 /**
- * Apps Script exposes every editor-runnable function to google.script.run too, so admin entry points
- * check the caller instead: only the user the script executes as (the owner, given the manifest's
- * executeAs USER_DEPLOYING) may run them. Other web app visitors get an empty or different active user.
+ * Maintenance helpers. They end in an underscore, so the browser cannot call them. The temporary editor-only
+ * wrappers in EditorTools.js call them; as a second layer they run only for the script owner and only while the
+ * owner has opened a short window by setting the Script Property MAINTENANCE_UNTIL to a time at most one hour
+ * ahead (ISO 8601). Delete the property when done. No browser request can open the window.
  */
-function assertScriptOwner_() {
+const MAX_MAINTENANCE_WINDOW_MS = 60 * 60 * 1000;
+
+function assertMaintenanceAllowed_() {
   const activeUser = Session.getActiveUser().getEmail();
   if (!activeUser || activeUser !== Session.getEffectiveUser().getEmail()) {
     throw new Error('Admin functions can only be run by the script owner from the Apps Script editor.');
+  }
+  const until = Date.parse(PropertiesService.getScriptProperties().getProperty('MAINTENANCE_UNTIL') || '');
+  const now = Date.now();
+  if (isNaN(until) || until <= now || until > now + MAX_MAINTENANCE_WINDOW_MS) {
+    throw appError_('MAINTENANCE_CLOSED', 'Maintenance is closed. Set the MAINTENANCE_UNTIL Script Property to a time within the next hour.');
   }
 }
 
@@ -16,8 +24,8 @@ function assertScriptOwner_() {
  * if any sheet has a problem that appending headers cannot fix.
  * Run manually from the Apps Script editor.
  */
-function setupDatabase() {
-  assertScriptOwner_();
+function setupDatabase_() {
+  assertMaintenanceAllowed_();
   const db = openSpreadsheet_();
   const spreadsheet = db.spreadsheet;
   const marker = getEnvironmentMarker_(spreadsheet);
@@ -52,9 +60,9 @@ function setupDatabase() {
 }
 
 /** Read-only DEV check of the spreadsheet connection, environment marker and schema. */
-function diagnoseDatabase() {
-  assertScriptOwner_();
-  if (getEnvironment() !== 'DEV') throw new Error('diagnoseDatabase is only available in DEV.');
+function diagnoseDatabase_() {
+  assertMaintenanceAllowed_();
+  if (getEnvironment_() !== 'DEV') throw new Error('diagnoseDatabase is only available in DEV.');
   const db = openSpreadsheet_();
   const marker = getEnvironmentMarker_(db.spreadsheet);
 

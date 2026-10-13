@@ -2,8 +2,8 @@
 const SCHEMAS = {
   ROOMMATES: {
     idColumn: 'roommate_id',
-    columns: ['roommate_id', 'name', 'email', 'active', 'created_at'],
-    required: ['name', 'email', 'active'],
+    columns: ['roommate_id', 'member_code', 'name', 'email', 'telegram_username', 'active', 'welcome_sent_at', 'created_at'],
+    required: ['member_code', 'name', 'email', 'active'],
   },
   ROTATION: {
     idColumn: 'rotation_id',
@@ -22,13 +22,16 @@ const SCHEMAS = {
   },
   VACATIONS: {
     idColumn: 'vacation_id',
-    columns: ['vacation_id', 'roommate_id', 'start_date', 'return_date', 'created_at'],
+    columns: ['vacation_id', 'roommate_id', 'start_date', 'return_date', 'created_at', 'cancelled_at'],
     required: ['roommate_id', 'start_date', 'return_date'],
   },
 };
 
 const CREATED_AT_COLUMN = 'created_at';
 const CLEANING_OUTCOMES = ['completed', 'admin_resolved', 'vacation_skipped'];
+const MEMBER_CODE_PATTERN = /^[A-Z]{3}-\d{3,}$/;
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const TELEGRAM_PATTERN = /^[A-Za-z][A-Za-z0-9_]{4,31}$/;
 
 function getSchema_(sheetName) {
   if (!Object.prototype.hasOwnProperty.call(SCHEMAS, sheetName)) {
@@ -82,6 +85,28 @@ function validateRecord_(sheetName, record) {
     if (isBlank_(record[field])) throw new Error(sheetName + ': ' + field + ' is required.');
   });
   if (sheetName === 'CLEANING_LOGS') assertLogOutcome_(record);
+  if (sheetName === 'ROOMMATES') assertRoommate_(record);
+}
+
+/** Roommate fields are checked on every write, so no code path can store a malformed member. */
+function assertRoommate_(roommate) {
+  const fail = function (message) {
+    throw appError_('ROOMMATE_INVALID', 'ROOMMATES: ' + message);
+  };
+  const name = roommate.name;
+  if (name !== name.trim() || name.length > 40 || !/\p{L}/u.test(name) || /[\u0000-\u001f\u007f]/.test(name)) {
+    fail('name must be 1-40 characters with a letter, no line breaks and no surrounding spaces.');
+  }
+  // Sheets would read these as formulas or numbers.
+  if (/^[=+\-@]/.test(name)) fail('name must not start with = + - or @.');
+  if (roommate.email.length > 254 || roommate.email !== roommate.email.toLowerCase() || !EMAIL_PATTERN.test(roommate.email)) {
+    fail('email must be a valid address in lower case.');
+  }
+  if (!MEMBER_CODE_PATTERN.test(roommate.member_code)) fail('member_code must look like ABC-001.');
+  if (!isBlank_(roommate.telegram_username) && !TELEGRAM_PATTERN.test(roommate.telegram_username)) {
+    fail('telegram_username must be 5-32 letters, digits or underscores, without @.');
+  }
+  if (typeof roommate.active !== 'boolean') fail('active must be true or false.');
 }
 
 /** Only a performed cleaning may carry completed_at; any other outcome must explain itself in notes. */
