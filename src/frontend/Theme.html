@@ -1,0 +1,41 @@
+<script>
+// Theme: Light, Dark or System. Runs in <head> so the saved choice is applied before the page paints.
+const THEME_STORAGE_KEY = 'chorenest-theme';
+const THEME_CHOICES = ['light', 'dark', 'system'];
+
+const systemDark = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : { matches: false, addEventListener: function () {} };
+let themeChoice = readThemeChoice();
+let themeToggle = null;
+
+function readThemeChoice() {
+  const saved = readStored(THEME_STORAGE_KEY);
+  return THEME_CHOICES.indexOf(saved) === -1 ? 'system' : saved;
+}
+
+function applyTheme() {
+  const theme = themeChoice === 'system' ? (systemDark.matches ? 'dark' : 'light') : themeChoice;
+  document.documentElement.setAttribute('data-theme', theme);
+  if (!themeToggle) return;
+  Array.from(themeToggle.querySelectorAll('[data-choice]')).forEach(function (button) {
+    button.setAttribute('aria-pressed', String(button.getAttribute('data-choice') === themeChoice));
+  });
+}
+
+function chooseTheme(choice) {
+  if (THEME_CHOICES.indexOf(choice) === -1) return;
+  themeChoice = choice;
+  writeStored(THEME_STORAGE_KEY, choice);
+  applyTheme();
+}
+
+function bindThemeToggle(element) {
+  themeToggle = element;
+  element.addEventListener('click', function (event) {
+    chooseTheme(event.target && event.target.getAttribute ? event.target.getAttribute('data-choice') : null);
+  });
+  applyTheme();
+}
+
+systemDark.addEventListener('change', applyTheme);
+applyTheme();
+</script>

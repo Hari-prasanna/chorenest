@@ -1,0 +1,51 @@
+<script>
+// Page wiring: loads the schedule through google.script.run and shows the loading, empty, error or schedule view.
+const appElement = document.getElementById('app');
+let currentSchedule = null;
+let selectedRoommateId = readSelectedRoommate();
+
+function show(html, busy) {
+  appElement.innerHTML = html;
+  appElement.setAttribute('aria-busy', busy ? 'true' : 'false');
+}
+
+function showResult(result) {
+  currentSchedule = isValidSchedule(result) ? result : null;
+  if (currentSchedule && selectedRoommateId !== validSelection(currentSchedule, selectedRoommateId)) {
+    selectedRoommateId = null;
+    saveSelectedRoommate(null); // That roommate was removed or deactivated.
+  }
+  try {
+    show(renderResult(result, selectedRoommateId), false);
+  } catch (error) {
+    show(renderProblem('UNEXPECTED_RESPONSE'), false);
+  }
+}
+
+function showRequestFailure() {
+  show(renderProblem('REQUEST_FAILED'), false);
+}
+
+function loadSchedule() {
+  show(renderLoading(), true);
+  google.script.run
+    .withSuccessHandler(showResult)
+    .withFailureHandler(showRequestFailure)
+    .getRotationSchedule();
+}
+
+appElement.addEventListener('click', function (event) {
+  if (event.target && event.target.getAttribute && event.target.getAttribute('data-action') === 'retry') loadSchedule();
+});
+
+// Replaces only the greeting text, so the picker keeps keyboard focus.
+appElement.addEventListener('change', function (event) {
+  if (!currentSchedule || !event.target || event.target.getAttribute('data-action') !== 'select-roommate') return;
+  selectedRoommateId = validSelection(currentSchedule, event.target.value);
+  saveSelectedRoommate(selectedRoommateId);
+  document.getElementById('who-text').innerHTML = renderIdentityText(currentSchedule, selectedRoommateId);
+});
+
+bindThemeToggle(document.getElementById('theme-toggle'));
+loadSchedule();
+</script>

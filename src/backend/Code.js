@@ -16,3 +16,8 @@ function doGet() {
     // HtmlService ignores viewport meta tags in the HTML itself.
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
+
+/** Template helper that inlines another frontend file. The trailing underscore keeps it out of google.script.run. */
+function include_(name) {
+  return HtmlService.createHtmlOutputFromFile(name).getContent();
+}

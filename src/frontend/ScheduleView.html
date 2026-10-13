@@ -1,0 +1,240 @@
+<script>
+// View helpers: schedule data in, HTML strings out. They never touch the DOM, so Node tests can run them.
+const TIME_ZONE = 'Europe/Berlin';
+const TASK_NAME = 'Entire Home';
+
+const SHORT_DAY = { weekday: 'short', day: 'numeric', month: 'short' };
+const LONG_DAY = { weekday: 'long', day: 'numeric', month: 'short', year: 'numeric' };
+const TIMESTAMP = { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' };
+
+const STATUS_LABELS = { pending: 'Pending', overdue: 'Overdue', waiting: 'Upcoming' };
+const STATUS_GLYPHS = { pending: '●', overdue: '!', waiting: '○' };
+const STATUS_MESSAGES = {
+  pending: 'Time to give the nest some love.',
+  overdue: 'Overdue: the nest is waiting for this one.',
+  waiting: 'Not open yet. Enjoy the break.',
+};
+const STATUS_EMOJIS = { pending: '✨', overdue: '', waiting: '✨' };
+const STEP_LABELS = ['Up next', 'Then', 'After that'];
+const AVATAR_TONES = 6;
+const CONFIG_CODES = [
+  'CONFIG_INVALID',
+  'SPREADSHEET_UNAVAILABLE',
+  'DATABASE_NOT_SET_UP',
+  'DATABASE_ENVIRONMENT_MISMATCH',
+  'TIMEZONE_MISMATCH',
+  'SCHEMA_INVALID',
+];
+
+const formatters = {};
+
+function berlinParts(ms, options) {
+  const key = JSON.stringify(options);
+  formatters[key] = formatters[key] || new Intl.DateTimeFormat('en-GB', Object.assign({ timeZone: TIME_ZONE }, options));
+  const parts = {};
+  formatters[key].formatToParts(new Date(ms)).forEach(function (part) {
+    parts[part.type] = part.value;
+  });
+  return parts;
+}
+
+// due_at is an exclusive Monday 00:00 boundary, so the last day of the weekend is one millisecond earlier.
+function lastDayMs(turn) {
+  return Date.parse(turn.due_at) - 1;
+}
+
+function formatWeekend(turn) {
+  const saturday = berlinParts(Date.parse(turn.weekend_starts_at), SHORT_DAY);
+  const sunday = berlinParts(lastDayMs(turn), SHORT_DAY);
+  const start = saturday.weekday + ' ' + saturday.day + (saturday.month === sunday.month ? '' : ' ' + saturday.month);
+  return start + ' – ' + sunday.weekday + ' ' + sunday.day + ' ' + sunday.month;
+}
+
+function formatDueDay(turn) {
+  const day = berlinParts(lastDayMs(turn), LONG_DAY);
+  return day.weekday + ' ' + day.day + ' ' + day.month + ' ' + day.year;
+}
+
+function formatTimestamp(iso) {
+  const time = berlinParts(Date.parse(iso), TIMESTAMP);
+  return time.weekday + ' ' + time.day + ' ' + time.month + ', ' + time.hour + ':' + time.minute;
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, function (character) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character];
+  });
+}
+
+function displayName(person) {
+  return person.name || 'Unknown roommate';
+}
+
+// A stable colour per roommate, so each person keeps the same avatar everywhere.
+function avatarTone(person) {
+  let hash = 0;
+  Array.from(person.roommate_id).forEach(function (character) {
+    hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+  });
+  return (hash % AVATAR_TONES) + 1;
+}
+
+function avatar(person, size) {
+  const initial = Array.from(displayName(person))[0].toUpperCase();
+  return '<span class="avatar avatar-' + size + ' tone-' + avatarTone(person) + '" aria-hidden="true">' + escapeHtml(initial) + '</span>';
+}
+
+function joinNames(names) {
+  if (names.length < 2) return names.join('');
+  return names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1];
+}
+
+function renderNote(icon, text) {
+  return '<p class="note"><span class="note-icon" aria-hidden="true">' + icon + '</span><span>' + escapeHtml(text) + '</span></p>';
+}
+
+function turnNotes(turn) {
+  const notes = [];
+  if (turn.assignee.roommate_id !== turn.owner.roommate_id) {
+    notes.push(renderNote('🔄', 'Swapped turn: covering for ' + displayName(turn.owner) + '.'));
+  }
+  if (turn.skipped.length) {
+    notes.push(renderNote('🏖️', joinNames(turn.skipped.map(displayName)) + (turn.skipped.length > 1 ? ' are' : ' is') + ' away.'));
+  }
+  if (turn.vacation_conflict_id) {
+    notes.push(renderNote('🏖️', 'A vacation has been recorded for this weekend.'));
+  }
+  return notes.join('');
+}
+
+// The picked roommate only changes the greeting. A stale id (someone removed or deactivated) counts as no pick.
+function validSelection(schedule, roommateId) {
+  return schedule.roommates.some(function (roommate) {
+    return roommate.roommate_id === roommateId;
+  }) ? roommateId : null;
+}
+
+function personalMessage(schedule, selectedId) {
+  if (!selectedId) return 'Pick your name to see your turn at a glance.';
+  const current = schedule.current;
+  if (current.assignee.roommate_id === selectedId) {
+    if (current.status === 'overdue') return 'Your turn is overdue.';
+    return current.status === 'waiting' ? 'You’re up next.' : 'It’s your turn this weekend.';
+  }
+  if (current.owner.roommate_id === selectedId) return 'Your turn is covered by ' + displayName(current.assignee) + ' (swap).';
+  const next = schedule.upcoming.find(function (turn) {
+    return turn.assignee.roommate_id === selectedId;
+  });
+  return next ? 'Your next turn: ' + formatWeekend(next) + '.' : 'You’re not up in the next few turns.';
+}
+
+function renderIdentityText(schedule, selectedId) {
+  const id = validSelection(schedule, selectedId);
+  const me = schedule.roommates.find(function (roommate) {
+    return roommate.roommate_id === id;
+  });
+  return '<h2 class="greeting">' + (me ? 'Hi, ' + escapeHtml(displayName(me)) + '!' : 'Hi there!') +
+    ' <span aria-hidden="true">👋</span></h2><p class="who-message">' + escapeHtml(personalMessage(schedule, id)) + '</p>';
+}
+
+function renderIdentity(schedule, selectedId) {
+  const id = validSelection(schedule, selectedId);
+  const options = ['<option value="">Just looking</option>'].concat(schedule.roommates.map(function (roommate) {
+    return '<option value="' + escapeHtml(roommate.roommate_id) + '"' + (roommate.roommate_id === id ? ' selected' : '') + '>' +
+      escapeHtml(displayName(roommate)) + '</option>';
+  })).join('');
+  return '<section class="who" aria-label="Greeting"><div class="who-text" id="who-text">' + renderIdentityText(schedule, id) + '</div>' +
+    '<div class="who-picker"><label for="who-select">Who are you?</label>' +
+    '<select class="who-select" id="who-select" data-action="select-roommate">' + options + '</select></div>' +
+    '<p class="who-note">Just for a friendly greeting. This isn’t a login.</p></section>';
+}
+
+function renderBadge(status) {
+  const known = Boolean(STATUS_LABELS[status]);
+  return '<span class="badge badge-' + (known ? status : 'waiting') + '"><span aria-hidden="true">' +
+    (STATUS_GLYPHS[status] || STATUS_GLYPHS.waiting) + '</span>' + escapeHtml(known ? STATUS_LABELS[status] : status) + '</span>';
+}
+
+function renderCurrentTurn(turn) {
+  const status = STATUS_LABELS[turn.status] ? turn.status : 'waiting';
+  const overdue = status === 'overdue';
+  return '<section class="card hero' + (overdue ? ' is-overdue' : '') + '" aria-labelledby="current-title">' +
+    '<div class="hero-top"><h2 class="eyebrow" id="current-title">Current turn</h2>' + renderBadge(turn.status) + '</div>' +
+    '<div class="hero-person">' + avatar(turn.assignee, 'lg') +
+    '<div class="person-text"><p class="name">' + escapeHtml(displayName(turn.assignee)) + '</p>' +
+    '<p class="task"><span aria-hidden="true">🧹</span> ' + escapeHtml(TASK_NAME) + '</p></div></div>' +
+    '<p class="message">' + (STATUS_EMOJIS[status] ? '<span aria-hidden="true">' + STATUS_EMOJIS[status] + '</span> ' : '') +
+    escapeHtml(STATUS_MESSAGES[status]) + '</p>' +
+    '<dl class="facts">' +
+    '<div><dt>Cleaning weekend</dt><dd>' + escapeHtml(formatWeekend(turn)) + '</dd></div>' +
+    '<div><dt>' + (overdue ? 'Was due' : 'Due') + '</dt><dd>' + escapeHtml('End of ' + formatDueDay(turn)) + '</dd></div></dl>' +
+    turnNotes(turn) + '</section>';
+}
+
+function renderUpcomingTurns(turns) {
+  if (!turns.length) return '';
+  const items = turns.map(function (turn, index) {
+    return '<li class="timeline-item">' + avatar(turn.assignee, 'md') +
+      '<div class="timeline-body"><div class="timeline-head"><p class="name">' + escapeHtml(displayName(turn.assignee)) + '</p>' +
+      '<span class="step' + (index === 0 ? ' is-next' : '') + '">' + escapeHtml(STEP_LABELS[index] || 'Later') + '</span></div>' +
+      '<p class="when">' + escapeHtml(formatWeekend(turn)) + '</p>' + turnNotes(turn) + '</div></li>';
+  }).join('');
+  return '<section class="card upcoming" aria-labelledby="upcoming-title">' +
+    '<h2 class="eyebrow section-title" id="upcoming-title">Coming up</h2><ol class="timeline">' + items + '</ol></section>';
+}
+
+function renderSchedule(schedule, selectedId) {
+  return '<div class="layout">' + renderIdentity(schedule, selectedId) + renderCurrentTurn(schedule.current) + renderUpcomingTurns(schedule.upcoming) +
+    '<p class="footnote">Updated ' + escapeHtml(formatTimestamp(schedule.generated_at)) + ' · Times in Berlin</p></div>';
+}
+
+function renderLoading() {
+  return '<div class="layout" role="status"><p class="eyebrow">Loading schedule…</p>' +
+    '<div class="skeleton skeleton-hero"></div>' +
+    '<div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div></div>';
+}
+
+function renderState(icon, title, message, code) {
+  return '<section class="card state"><span class="state-icon" aria-hidden="true">' + icon + '</span>' +
+    '<h2>' + escapeHtml(title) + '</h2><p>' + escapeHtml(message) + '</p>' +
+    '<button class="button" type="button" data-action="retry">Try again</button>' +
+    (code ? '<p class="code">Error code: ' + escapeHtml(code) + '</p>' : '') + '</section>';
+}
+
+// Server messages can name configuration details, so visitors only get a code and a plain explanation.
+function renderProblem(code) {
+  if (code === 'ROTATION_EMPTY') {
+    return renderState('✨', 'No rotation yet', 'Once roommates are added to the rotation, the cleaning schedule will appear here.');
+  }
+  if (CONFIG_CODES.indexOf(code) !== -1) {
+    return renderState('🧹', 'ChoreNest isn’t set up correctly', 'Ask the app owner to check the configuration, then try again.', code);
+  }
+  if (code === 'ROTATION_DATA_INVALID') {
+    return renderState('🧹', 'The rotation data needs attention', 'Something in the rotation records isn’t valid. Ask the app owner to check the Google Sheet.', code);
+  }
+  if (code === 'REQUEST_FAILED') {
+    return renderState('🧹', 'Couldn’t reach the server', 'Check your connection and try again.', code);
+  }
+  return renderState('🧹', 'Something went wrong', 'Try again in a moment.', code);
+}
+
+function isValidPerson(person) {
+  return Boolean(person) && typeof person.roommate_id === 'string';
+}
+
+function isValidTurn(turn) {
+  return Boolean(turn) && isValidPerson(turn.owner) && isValidPerson(turn.assignee) && Array.isArray(turn.skipped) &&
+    turn.skipped.every(isValidPerson) && !isNaN(Date.parse(turn.weekend_starts_at)) && !isNaN(Date.parse(turn.due_at));
+}
+
+function isValidSchedule(result) {
+  return Boolean(result) && result.ok === true && isValidTurn(result.current) && typeof result.current.status === 'string' &&
+    Array.isArray(result.upcoming) && result.upcoming.every(isValidTurn) && !isNaN(Date.parse(result.generated_at)) &&
+    Array.isArray(result.roommates) && result.roommates.every(isValidPerson);
+}
+
+function renderResult(result, selectedId) {
+  if (result && result.ok === false && result.error) return renderProblem(result.error.code);
+  return isValidSchedule(result) ? renderSchedule(result, selectedId) : renderProblem('UNEXPECTED_RESPONSE');
+}
+</script>
