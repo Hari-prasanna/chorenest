@@ -1,44 +1,36 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
   <head>
     <base target="_top">
-    <style>
-      body {
-        margin: 0;
-        min-height: 100vh;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-        background: #f6f7f9;
-        color: #1f2933;
-      }
-      main {
-        padding: 1rem;
-        text-align: center;
-      }
-      h1 {
-        margin: 0;
-        font-size: clamp(2rem, 8vw, 3.5rem);
-      }
-      .env-badge {
-        display: inline-block;
-        margin-top: 0.75rem;
-        padding: 0.25rem 0.75rem;
-        border-radius: 999px;
-        background: #b45309;
-        color: #fff;
-        font-size: 0.875rem;
-        font-weight: 600;
-      }
-    </style>
+    <?!= include_('frontend/Styles') ?>
+    <?!= include_('frontend/Storage') ?>
+    <?!= include_('frontend/Theme') ?>
   </head>
   <body>
-    <main>
-      <h1>ChoreNest</h1>
-      <? if (environment === 'DEV') { ?>
-        <span class="env-badge">DEV</span>
-      <? } ?>
-    </main>
+    <div class="page">
+      <header class="top">
+        <div class="brand">
+          <svg class="logo" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+            <rect class="logo-bg" width="32" height="32" rx="10"></rect>
+            <path class="logo-mark" d="M7.5 15.5 16 8l8.5 7.5V24h-17z"></path>
+            <rect class="logo-door" x="13.5" y="17.5" width="5" height="6.5" rx="1.5"></rect>
+          </svg>
+          <h1>ChoreNest</h1>
+          <? if (environment === 'DEV') { ?>
+            <span class="env-badge">DEV</span>
+          <? } ?>
+        </div>
+        <div class="theme-toggle" id="theme-toggle" role="group" aria-label="Theme">
+          <button type="button" data-choice="light" aria-pressed="false">Light</button>
+          <button type="button" data-choice="dark" aria-pressed="false">Dark</button>
+          <button type="button" data-choice="system" aria-pressed="true">System</button>
+        </div>
+      </header>
+      <p class="tagline">Whose turn is it to clean?</p>
+      <main id="app" aria-live="polite" aria-busy="true"></main>
+    </div>
+    <?!= include_('frontend/ScheduleView') ?>
+    <?!= include_('frontend/Identity') ?>
+    <?!= include_('frontend/App') ?>
   </body>
 </html>

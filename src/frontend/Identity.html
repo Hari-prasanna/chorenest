@@ -1,0 +1,13 @@
+<script>
+// "Who are you?" is a convenience for greetings only. It is NOT authentication: anyone can pick any name,
+// nothing is verified, and the choice stays in this browser and is never sent to the server.
+const ROOMMATE_STORAGE_KEY = 'chorenest-roommate';
+
+function readSelectedRoommate() {
+  return readStored(ROOMMATE_STORAGE_KEY) || null;
+}
+
+function saveSelectedRoommate(roommateId) {
+  writeStored(ROOMMATE_STORAGE_KEY, roommateId || null);
+}
+</script>

@@ -1,0 +1,19 @@
+<script>
+// Browser storage that never throws: embedded pages may have it blocked. A value then lasts for this visit only.
+function readStored(key) {
+  try {
+    return window.localStorage.getItem(key);
+  } catch (error) {
+    return null;
+  }
+}
+
+function writeStored(key, value) {
+  try {
+    if (value === null) window.localStorage.removeItem(key);
+    else window.localStorage.setItem(key, value);
+  } catch (error) {
+    // Nothing to do: the choice is still applied for this visit.
+  }
+}
+</script>

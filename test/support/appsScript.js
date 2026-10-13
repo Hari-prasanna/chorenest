@@ -137,7 +137,6 @@ function loadProject({ properties = {}, spreadsheets = [], activeUser = OWNER, n
       getEffectiveUser: () => ({ getEmail: () => OWNER }),
       getScriptTimeZone: () => SCRIPT_TIME_ZONE,
     },
-    LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock() {} }) },
     Utilities: { getUuid: () => crypto.randomUUID() },
   });
 

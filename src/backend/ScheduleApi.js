@@ -3,7 +3,8 @@ const ROTATION_SHEETS = ['ROOMMATES', 'ROTATION', 'CLEANING_LOGS', 'SWAPS', 'VAC
 
 /**
  * Browser API (google.script.run): the current cleaning turn and the next few, read-only.
- * Returns { ok: true, environment, generated_at, current, upcoming } or { ok: false, error: { code, message } }.
+ * Returns { ok: true, environment, generated_at, current, upcoming, roommates } or { ok: false, error: { code, message } }.
+ * `roommates` lists active roommates as { roommate_id, name } for the "who are you?" picker. It takes no input.
  * Dates are ISO strings because google.script.run cannot return Date objects.
  */
 function getRotationSchedule() {
@@ -32,6 +33,17 @@ function getRotationSchedule() {
       names[roommate.roommate_id] = String(roommate.name);
     });
 
+    const roommates = data.roommates
+      .filter(function (roommate) {
+        return roommate.active === true;
+      })
+      .map(function (roommate) {
+        return { roommate_id: roommate.roommate_id, name: names[roommate.roommate_id] };
+      })
+      .sort(function (a, b) {
+        return a.name.localeCompare(b.name);
+      });
+
     const currentJson = turnToJson_(current, names);
     currentJson.status = current.status;
     return {
@@ -42,6 +54,7 @@ function getRotationSchedule() {
       upcoming: upcoming.map(function (turn) {
         return turnToJson_(turn, names);
       }),
+      roommates: roommates,
     };
   } catch (error) {
     // The engine only throws because of the data it was given.

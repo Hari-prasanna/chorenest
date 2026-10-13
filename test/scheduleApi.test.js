@@ -209,3 +209,29 @@ test('error responses are browser-safe JSON', () => {
   assert.deepEqual(JSON.parse(JSON.stringify(raw)), plain(raw));
   assert.deepEqual(Object.keys(raw).sort(), ['error', 'ok']);
 });
+
+// Roommate picker data
+
+test('lists active roommates by name, with only ids and names', () => {
+  const raw = devProject(fixtureSpreadsheet()).get('getRotationSchedule')();
+  const result = plain(raw);
+  const expected = FIXTURES.ROOMMATES.map((r) => ({ roommate_id: r.roommate_id, name: r.name })).sort((a, b) => a.name.localeCompare(b.name));
+  assert.deepEqual(result.roommates, expected);
+  for (const roommate of result.roommates) assert.deepEqual(Object.keys(roommate).sort(), ['name', 'roommate_id']);
+  const json = JSON.stringify(raw);
+  for (const roommate of FIXTURES.ROOMMATES) assert.equal(json.includes(roommate.email), false);
+  assert.deepEqual(JSON.parse(json), result);
+});
+
+test('inactive roommates are not offered', () => {
+  const roommates = sheetWith('ROOMMATES', (r) => (r.name === 'Kim Example' ? { ...r, active: false } : r));
+  const result = schedule(devProject(fixtureSpreadsheet({ sheets: { ROOMMATES: roommates } })));
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.roommates.map((r) => r.name), ['Alex Example', 'Jo Example', 'Sam Example']);
+});
+
+test('the schedule API takes no input, so a caller cannot choose who they are', () => {
+  const project = devProject(fixtureSpreadsheet());
+  const baseline = plain(project.get('getRotationSchedule')());
+  assert.deepEqual(plain(project.get('getRotationSchedule')(FIXTURES.ROOMMATES[1].roommate_id, 'admin', { role: 'admin' })), baseline);
+});
