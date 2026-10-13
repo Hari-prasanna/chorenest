@@ -16,21 +16,44 @@
             <rect class="logo-door" x="13.5" y="17.5" width="5" height="6.5" rx="1.5"></rect>
           </svg>
           <h1>ChoreNest</h1>
+          <span class="beta-badge">Beta</span>
           <? if (environment === 'DEV') { ?>
             <span class="env-badge">DEV</span>
           <? } ?>
         </div>
-        <div class="theme-toggle" id="theme-toggle" role="group" aria-label="Theme">
-          <button type="button" data-choice="light" aria-pressed="false">Light</button>
-          <button type="button" data-choice="dark" aria-pressed="false">Dark</button>
-          <button type="button" data-choice="system" aria-pressed="true">System</button>
+        <div class="top-actions">
+          <div class="theme-toggle" id="theme-toggle" role="group" aria-label="Theme">
+            <button type="button" data-choice="light" aria-pressed="false">Light</button>
+            <button type="button" data-choice="dark" aria-pressed="false">Dark</button>
+            <button type="button" data-choice="system" aria-pressed="true">System</button>
+          </div>
+          <button class="profile" id="profile-button" type="button" data-action="open-profile" aria-haspopup="dialog" aria-label="Profile: no name picked"></button>
         </div>
       </header>
-      <p class="tagline">Whose turn is it to clean?</p>
-      <main id="app" aria-live="polite" aria-busy="true"></main>
+      <nav class="tabs" id="tabs" aria-label="Sections">
+        <button class="tab" type="button" data-tab="schedule" aria-current="page"><span class="tab-icon" aria-hidden="true">🧹</span><span>Schedule</span></button>
+        <button class="tab" type="button" data-tab="vacation" aria-current="false"><span class="tab-icon" aria-hidden="true">🏖️</span><span>Vacation</span></button>
+        <button class="tab" type="button" data-tab="swaps" aria-current="false"><span class="tab-icon" aria-hidden="true">🔄</span><span>Swaps</span></button>
+        <button class="tab" type="button" data-tab="history" aria-current="false"><span class="tab-icon" aria-hidden="true">🕘</span><span>History</span></button>
+      </nav>
+      <aside class="beta-notice" id="beta-notice" aria-label="Beta notice" hidden></aside>
+      <main>
+        <div id="panel-schedule" data-settled="false">
+          <p class="tagline">Whose turn is it to clean?</p>
+          <div id="app" aria-live="polite" aria-busy="true"></div>
+        </div>
+        <div id="panel-vacation" hidden></div>
+        <div id="panel-swaps" hidden></div>
+        <div id="panel-history" hidden></div>
+      </main>
     </div>
+    <dialog id="profile-dialog" class="dialog" aria-labelledby="profile-title"></dialog>
+    <dialog id="confirm-dialog" class="dialog" aria-labelledby="confirm-title"></dialog>
+    <dialog id="vacation-dialog" class="dialog dialog-wide" aria-labelledby="vacation-title"></dialog>
     <?!= include_('frontend/ScheduleView') ?>
+    <?!= include_('frontend/VacationView') ?>
     <?!= include_('frontend/Identity') ?>
+    <?!= include_('frontend/Shell') ?>
     <?!= include_('frontend/App') ?>
   </body>
 </html>

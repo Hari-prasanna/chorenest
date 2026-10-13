@@ -1,10 +1,11 @@
 const ALLOWED_ENVIRONMENTS = ['DEV', 'PROD'];
+const LOCK_WAIT_MS = 10000;
 
 /**
  * Returns the environment name from the ENVIRONMENT Script Property.
  * Throws if it is missing or not exactly DEV or PROD.
  */
-function getEnvironment() {
+function getEnvironment_() {
   const value = PropertiesService.getScriptProperties().getProperty('ENVIRONMENT');
   if (ALLOWED_ENVIRONMENTS.indexOf(value) === -1) {
     throw appError_('CONFIG_INVALID', 'Invalid ENVIRONMENT Script Property: ' + JSON.stringify(value));

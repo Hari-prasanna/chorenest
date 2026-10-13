@@ -254,7 +254,7 @@ test('a vacation added during the current turn is reported, and the turn can be 
   const turns = previewTurns(data({ vacations: [late], logs: [skip] }), at(1, 8), 5);
   assert.deepEqual(assignees(turns), ['Sam', 'Jo', 'Kim', 'Alex', 'Sam']);
   assert.equal(turns[0].vacation_conflict_id, null);
-  assert.equal(turns[0].due_at.getTime(), due(1).getTime());
+  assert.equal(turns[0].due_at.getTime(), due(0).getTime(), 'the skipped turn does not use up the weekend: Sam cleans it');
 });
 
 test('a planned vacation skip is a valid vacation_skipped log, and applying it leaves no make-up turn or return priority', () => {
@@ -281,7 +281,7 @@ test('a planned vacation skip is a valid vacation_skipped log, and applying it l
   const turns = previewTurns(applied, now, 9);
   assert.deepEqual(assignees(turns), ['Sam', 'Jo', 'Kim', 'Alex', 'Sam', 'Jo', 'Kim', 'Alex', 'Sam']);
   assert.equal(turns[0].vacation_conflict_id, null);
-  assert.deepEqual(dueTimes(turns), [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => due(n).getTime()));
+  assert.deepEqual(dueTimes(turns), [0, 1, 2, 3, 4, 5, 6, 7, 8].map((n) => due(n).getTime()));
 });
 
 test('nothing is planned without a vacation conflict, and the plan covers only the current turn', () => {
@@ -440,7 +440,8 @@ test('rejects inconsistent rotation data', () => {
   assert.throws(() => previewTurns(data({ rotation: [{ ...rotation[0], position: '1' }] }), START, 1), /position must be a number/);
   assert.throws(() => previewTurns(data({ logs: [{ ...log('Alex', 0), rotation_id: 'gone' }] }), START, 1), /unknown rotation slot/);
   assert.throws(() => previewTurns(data({ logs: [{ ...log('Alex', 0), resolved_at: '' }] }), START, 1), /resolved_at must be a date/);
-  assert.throws(() => previewTurns(data({ vacations: [vacation('Sam', at(1, 5), at(1, 5))] }), START, 1), /must return after it starts/);
+  // A bad vacation row is ignored, not fatal: one typo must not take the page down.
+  assert.deepEqual(assignees(previewTurns(data({ vacations: [vacation('Sam', at(1, 5), at(1, 5))] }), START, 2)), ['Alex', 'Sam']);
   assert.throws(() => previewTurns(data({ swaps: [{ ...swap('Alex', 0, 'Sam', 1), to_due_date: '' }] }), START, 1), /to_due_date must be a date/);
 });
 

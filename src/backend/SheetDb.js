@@ -22,6 +22,33 @@ const SheetDb = {
     return records;
   },
 
+  /**
+   * Sets fields of the row with this ID. Only schema columns can change, never the ID or created_at, and rows are
+   * never deleted: this is how a record is retired (for example a cancelled vacation).
+   */
+  update: function (sheetName, id, changes) {
+    const schema = getSchema_(sheetName);
+    Object.keys(changes).forEach(function (field) {
+      if (schema.columns.indexOf(field) === -1 || field === schema.idColumn || field === CREATED_AT_COLUMN) {
+        throw new Error(sheetName + ': ' + field + ' cannot be changed.');
+      }
+      const value = changes[field];
+      if (!isBlank_(value) && !isCellValue_(value)) throw new Error(sheetName + ': ' + field + ' must be a string, number, boolean or date.');
+      if (typeof value === 'string' && value.charAt(0) === '=') throw new Error(sheetName + ': ' + field + ' must not start with "=".');
+    });
+    const table = readTable_(openDatabase_(), sheetName);
+    // Blank rows are skipped when reading, so find the real row number in the raw values.
+    const raw = table.sheet.getDataRange().getValues();
+    const idColumn = table.headers.indexOf(schema.idColumn);
+    const index = raw.findIndex(function (row, i) {
+      return i > 0 && row[idColumn] === id;
+    });
+    if (index === -1) throw appError_('RECORD_NOT_FOUND', sheetName + ': no row with that ID.');
+    Object.keys(changes).forEach(function (field) {
+      table.sheet.getRange(index + 1, table.headers.indexOf(field) + 1, 1, 1).setValues([[isBlank_(changes[field]) ? '' : changes[field]]]);
+    });
+  },
+
   /** Validates and appends a record, assigning its ID and created_at. Returns the stored record. */
   insert: function (sheetName, record) {
     validateRecord_(sheetName, record);
@@ -36,7 +63,7 @@ const SheetDb = {
 
 /** Opens this project's configured spreadsheet. Fails before opening anything if configuration is invalid. */
 function openSpreadsheet_() {
-  const environment = getEnvironment();
+  const environment = getEnvironment_();
   const spreadsheetId = PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID');
   if (!SPREADSHEET_ID_PATTERN.test(spreadsheetId || '')) {
     throw appError_('CONFIG_INVALID', 'Invalid SPREADSHEET_ID Script Property. Use the ID from the spreadsheet URL, not the full URL.');

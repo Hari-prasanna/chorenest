@@ -1,0 +1,67 @@
+<script>
+// App shell: section navigation, the Beta notice, the profile entry and "Work in progress" pages.
+// Data in, HTML strings out; no DOM access. Nothing here changes data or calls the server.
+const TABS = ['schedule', 'vacation', 'swaps', 'history'];
+const BETA_STORAGE_KEY = 'chorenest-beta-notice';
+const BETA_NOTICE = 'Some issues may take longer to fix while the admin is away. Thanks for your patience!';
+const UNVERIFIED_NOTE = 'You picked this name from a list on this device. It isn’t a login and it isn’t verified: anyone with the link can pick any name.';
+
+const WORK_IN_PROGRESS = {
+  swaps: { icon: '🔄', title: 'Swaps', text: 'Trading a cleaning turn with a roommate will live here.' },
+  history: { icon: '🕘', title: 'History', text: 'A look back at who cleaned and when will live here.' },
+};
+
+function renderBetaNotice() {
+  return '<div class="beta-notice-body"><p><strong>ChoreNest is in beta.</strong> ' + escapeHtml(BETA_NOTICE) + '</p>' +
+    '<button class="button button-quiet" type="button" data-action="dismiss-beta">Got it</button></div>';
+}
+
+function renderVacationPage() {
+  return '<h2 class="panel-title">Vacation</h2>' + renderVacationEntry();
+}
+
+// An honest placeholder: no buttons, no forms, nothing that looks like it saves.
+function renderWorkInProgress(tab) {
+  const page = WORK_IN_PROGRESS[tab];
+  return '<section class="card state wip" aria-labelledby="wip-' + tab + '"><span class="state-icon" aria-hidden="true">' + page.icon + '</span>' +
+    '<h2 class="panel-title" id="wip-' + tab + '">' + escapeHtml(page.title) + '</h2>' +
+    '<p><span class="wip-badge">Work in progress</span></p>' +
+    '<p>' + escapeHtml(page.text) + '</p><p>Nothing to do here yet.</p></section>';
+}
+
+function profileState(schedule, selectedId) {
+  const id = schedule ? validSelection(schedule, selectedId) : null;
+  const me = id ? schedule.roommates.find(function (roommate) {
+    return roommate.roommate_id === id;
+  }) : null;
+  return me || null;
+}
+
+// The top-right entry always states what is known: a name that was picked, or nothing.
+function renderProfileButton(schedule, selectedId) {
+  const me = profileState(schedule, selectedId);
+  const label = me ? displayName(me) : 'Just looking';
+  const state = me ? 'Not verified' : 'No name picked';
+  const icon = me ? avatar(me, 'sm') : '<span class="avatar avatar-sm avatar-none" aria-hidden="true">?</span>';
+  return icon + '<span class="profile-text"><span class="profile-name">' + escapeHtml(label) + '</span>' +
+    '<span class="profile-state">' + state + '</span></span>';
+}
+
+function profileLabel(schedule, selectedId) {
+  const me = profileState(schedule, selectedId);
+  return me ? 'Profile: ' + displayName(me) + ', not verified' : 'Profile: no name picked';
+}
+
+function renderProfileDialog(schedule, selectedId) {
+  const me = profileState(schedule, selectedId);
+  const body = !schedule
+    ? '<p>The roommate list hasn’t loaded yet.</p>'
+    : me
+      ? '<p class="profile-who">Viewing as <strong>' + escapeHtml(displayName(me)) + '</strong></p><p>' + escapeHtml(UNVERIFIED_NOTE) + '</p>'
+      : '<p class="profile-who">Just looking</p><p>No name is picked. Pick yours on the Schedule tab to get a personal greeting. ' +
+        'It isn’t a login and it isn’t verified.</p>';
+  const change = schedule ? '<button class="button" type="button" data-action="change-name">' + (me ? 'Change name' : 'Pick a name') + '</button>' : '';
+  return '<div class="dialog-body"><h2 id="profile-title">Profile</h2>' + body +
+    '<div class="dialog-actions">' + change + '<button class="button button-quiet" type="button" data-action="close-profile" autofocus>Close</button></div></div>';
+}
+</script>

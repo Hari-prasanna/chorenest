@@ -109,19 +109,30 @@ class FakeSpreadsheet {
 
 const OWNER = 'owner@example.com';
 
+const listJs = (dir) => fs.readdirSync(dir).filter((f) => f.endsWith('.js')).sort().map((f) => path.join(dir, f));
+
+
 /**
  * Creates one Apps Script project. `properties` are its Script Properties;
  * `spreadsheets` are every spreadsheet the deploying user can open.
  * `activeUser` is who triggered the execution: the owner in the editor, or a web app visitor
  * ('' when Google hides the visitor's email). `now` fixes the project's clock.
+ * The maintenance window is open unless `maintenance: false` or the properties set MAINTENANCE_UNTIL themselves.
+ * `lock` records and controls LockService: { events, held, deny }.
  */
-function loadProject({ properties = {}, spreadsheets = [], activeUser = OWNER, now } = {}) {
+function loadProject({ properties = {}, spreadsheets = [], activeUser = OWNER, now, maintenance = true, lock = { events: [], held: false, deny: false } } = {}) {
   const opened = [];
+  if (maintenance && !('MAINTENANCE_UNTIL' in properties)) {
+    properties = { ...properties, MAINTENANCE_UNTIL: new Date((now ? now.getTime() : Date.now()) + 30 * 60 * 1000).toISOString() };
+  }
   const context = vm.createContext({
     console: { log() {}, error() {} },
     PropertiesService: {
       getScriptProperties: () => ({
         getProperty: (key) => (Object.prototype.hasOwnProperty.call(properties, key) ? properties[key] : null),
+        deleteProperty: (key) => {
+          delete properties[key];
+        },
       }),
     },
     SpreadsheetApp: {
@@ -136,6 +147,23 @@ function loadProject({ properties = {}, spreadsheets = [], activeUser = OWNER, n
       getActiveUser: () => ({ getEmail: () => activeUser }),
       getEffectiveUser: () => ({ getEmail: () => OWNER }),
       getScriptTimeZone: () => SCRIPT_TIME_ZONE,
+    },
+    LockService: {
+      getScriptLock: () => ({
+        tryLock: () => {
+          if (lock.deny || lock.held) {
+            lock.events.push('lock-denied');
+            return false;
+          }
+          lock.held = true;
+          lock.events.push('lock');
+          return true;
+        },
+        releaseLock: () => {
+          lock.held = false;
+          lock.events.push('unlock');
+        },
+      }),
     },
     Utilities: { getUuid: () => crypto.randomUUID() },
   });
@@ -153,12 +181,16 @@ function loadProject({ properties = {}, spreadsheets = [], activeUser = OWNER, n
     );
   }
 
-  for (const file of fs.readdirSync(BACKEND_DIR).filter((f) => f.endsWith('.js')).sort()) {
-    vm.runInContext(fs.readFileSync(path.join(BACKEND_DIR, file), 'utf8'), context, { filename: file });
+  for (const file of listJs(BACKEND_DIR)) {
+    vm.runInContext(fs.readFileSync(file, 'utf8'), context, { filename: path.basename(file) });
   }
 
   return {
     opened,
+    lock,
+    get properties() {
+      return properties;
+    },
     // Top-level const declarations are not properties of the context, so evaluate by name.
     get: (name) => vm.runInContext(name, context),
   };

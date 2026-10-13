@@ -1,7 +1,7 @@
 function doGet() {
   let environment;
   try {
-    environment = getEnvironment();
+    environment = getEnvironment_();
   } catch (error) {
     // Fail closed: log the detail, show the visitor nothing about the configuration.
     console.error(error);

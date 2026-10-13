@@ -8,9 +8,11 @@
     "test": "node --test \"test/**/*.test.js\"",
     "push:dev": "node scripts/clasp-env.js dev push",
     "deploy:dev": "node scripts/clasp-env.js dev deploy",
-    "deploy:prod": "node scripts/clasp-env.js prod deploy"
+    "deploy:prod": "node scripts/clasp-env.js prod deploy",
+    "test:e2e": "playwright test"
   },
   "devDependencies": {
-    "@google/clasp": "3.3.0"
+    "@google/clasp": "3.3.0",
+    "@playwright/test": "1.49.1"
   }
 }

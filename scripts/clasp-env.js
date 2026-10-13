@@ -47,6 +47,15 @@ function readConfig(env) {
   return config;
 }
 
+// The temporary editor-only wrappers are browser-callable, so they may only ship while the web app is owner-only.
+function assertWrappersAreSafe() {
+  if (!fs.existsSync(path.join(ROOT, 'src', 'backend', 'EditorTools.js'))) return;
+  const { webapp } = JSON.parse(fs.readFileSync(path.join(ROOT, 'src', 'appsscript.json'), 'utf8'));
+  if (!webapp || webapp.access !== 'MYSELF' || webapp.executeAs !== 'USER_DEPLOYING') {
+    fail('src/backend/EditorTools.js (temporary editor-only wrappers) must be deleted before the web app is opened to anyone but its owner.');
+  }
+}
+
 function git(args) {
   const result = spawnSync('git', args, { cwd: ROOT, encoding: 'utf8' });
   return result.status === 0 ? result.stdout.trim() : '';
@@ -100,6 +109,8 @@ async function main() {
   if (other && config.deploymentId && other.deploymentId === config.deploymentId) {
     fail('.clasp.dev.json and .clasp.prod.json share the same deploymentId.');
   }
+
+  assertWrappersAreSafe();
 
   const commit = git(['rev-parse', '--short', 'HEAD']);
   const dirty = git(['status', '--porcelain']) !== '';

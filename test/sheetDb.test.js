@@ -16,7 +16,7 @@ const {
   writableFixture,
 } = require('./support/appsScript');
 
-const ROOMMATE_HEADERS = ['roommate_id', 'name', 'email', 'active', 'created_at'];
+const ROOMMATE_HEADERS = ['roommate_id', 'member_code', 'name', 'email', 'telegram_username', 'active', 'welcome_sent_at', 'created_at'];
 
 function devProject(spreadsheets, properties = {}) {
   return loadProject({
@@ -27,7 +27,7 @@ function devProject(spreadsheets, properties = {}) {
 
 function setUpSpreadsheet(id, environment) {
   const spreadsheet = new FakeSpreadsheet(id);
-  loadProject({ properties: { ENVIRONMENT: environment, SPREADSHEET_ID: id }, spreadsheets: [spreadsheet] }).get('setupDatabase')();
+  loadProject({ properties: { ENVIRONMENT: environment, SPREADSHEET_ID: id }, spreadsheets: [spreadsheet] }).get('setupDatabase_')();
   return spreadsheet;
 }
 
@@ -39,7 +39,7 @@ test('missing or invalid ENVIRONMENT fails before SPREADSHEET_ID is used', () =>
     if (environment !== undefined) properties.ENVIRONMENT = environment;
     const project = loadProject({ properties, spreadsheets: [new FakeSpreadsheet(DEV_SPREADSHEET_ID)] });
     assert.throws(() => project.get('SheetDb').list('ROOMMATES'), /Invalid ENVIRONMENT/);
-    assert.throws(() => project.get('setupDatabase')(), /Invalid ENVIRONMENT/);
+    assert.throws(() => project.get('setupDatabase_')(), /Invalid ENVIRONMENT/);
     assert.deepEqual(project.opened, []);
   }
 });
@@ -51,8 +51,8 @@ test('missing or malformed SPREADSHEET_ID fails without opening a spreadsheet', 
       properties: spreadsheetId === undefined ? { ENVIRONMENT: 'DEV' } : { ENVIRONMENT: 'DEV', SPREADSHEET_ID: spreadsheetId },
     });
     assert.throws(() => project.get('SheetDb').list('ROOMMATES'), /Invalid SPREADSHEET_ID/);
-    assert.throws(() => project.get('setupDatabase')(), /Invalid SPREADSHEET_ID/);
-    assert.throws(() => project.get('diagnoseDatabase')(), /Invalid SPREADSHEET_ID/);
+    assert.throws(() => project.get('setupDatabase_')(), /Invalid SPREADSHEET_ID/);
+    assert.throws(() => project.get('diagnoseDatabase_')(), /Invalid SPREADSHEET_ID/);
     assert.deepEqual(project.opened, []);
   }
 });
@@ -70,8 +70,8 @@ test('each project opens only the spreadsheet in its own Script Properties', () 
   const devApp = devProject([dev, prod]);
   const prodApp = loadProject({ properties: { ENVIRONMENT: 'PROD', SPREADSHEET_ID: PROD_SPREADSHEET_ID }, spreadsheets: [dev, prod] });
 
-  devApp.get('SheetDb').insert('ROOMMATES', { name: 'Dev', email: 'dev@example.com', active: true });
-  prodApp.get('SheetDb').insert('ROOMMATES', { name: 'Prod', email: 'prod@example.com', active: true });
+  devApp.get('SheetDb').insert('ROOMMATES', { member_code: 'DEV-001', name: 'Dev', email: 'dev@example.com', active: true });
+  prodApp.get('SheetDb').insert('ROOMMATES', { member_code: 'PRD-001', name: 'Prod', email: 'prod@example.com', active: true });
 
   assert.deepEqual(devApp.opened, [DEV_SPREADSHEET_ID]);
   assert.deepEqual(prodApp.opened, [PROD_SPREADSHEET_ID]);
@@ -94,7 +94,7 @@ test('data access refuses a spreadsheet whose time zone differs from the script'
     assert.throws(() => project.get('SheetDb').insert('ROOMMATES', writableFixture('ROOMMATES')), message);
     assert.equal(spreadsheet.snapshot(), before);
 
-    const report = plain(project.get('diagnoseDatabase')());
+    const report = plain(project.get('diagnoseDatabase_')());
     assert.equal(report.ok, false, timeZone);
     assert.equal(report.spreadsheetTimeZone, timeZone);
   }
@@ -103,11 +103,11 @@ test('data access refuses a spreadsheet whose time zone differs from the script'
 test('Arctic/Longyearbyen is accepted as the IANA link to Europe/Berlin', () => {
   const spreadsheet = new FakeSpreadsheet(DEV_SPREADSHEET_ID, { timeZone: 'Arctic/Longyearbyen' });
   const project = devProject([spreadsheet]);
-  project.get('setupDatabase')();
+  project.get('setupDatabase_')();
   const stored = project.get('SheetDb').insert('ROOMMATES', writableFixture('ROOMMATES'));
   assert.equal(project.get('SheetDb').list('ROOMMATES')[0].roommate_id, stored.roommate_id);
 
-  const report = plain(project.get('diagnoseDatabase')());
+  const report = plain(project.get('diagnoseDatabase_')());
   assert.equal(report.ok, true);
   assert.equal(report.spreadsheetTimeZone, 'Arctic/Longyearbyen');
   assert.equal(report.scriptTimeZone, 'Europe/Berlin');
@@ -125,22 +125,22 @@ test('DEV configured with the PROD spreadsheet ID refuses to read, write or set 
 
   assert.throws(() => devApp.get('SheetDb').list('ROOMMATES'), /belongs to PROD, not DEV/);
   assert.throws(
-    () => devApp.get('SheetDb').insert('ROOMMATES', { name: 'X', email: 'x@example.com', active: true }),
+    () => devApp.get('SheetDb').insert('ROOMMATES', { member_code: 'XXX-001', name: 'Xavier', email: 'x@example.com', active: true }),
     /belongs to PROD, not DEV/
   );
-  assert.throws(() => devApp.get('setupDatabase')(), /belongs to PROD, not DEV/);
+  assert.throws(() => devApp.get('setupDatabase_')(), /belongs to PROD, not DEV/);
   assert.equal(prod.snapshot(), before);
 });
 
 test('diagnoseDatabase is DEV-only and read-only', () => {
   const prod = setUpSpreadsheet(PROD_SPREADSHEET_ID, 'PROD');
   const prodApp = loadProject({ properties: { ENVIRONMENT: 'PROD', SPREADSHEET_ID: PROD_SPREADSHEET_ID }, spreadsheets: [prod] });
-  assert.throws(() => prodApp.get('diagnoseDatabase')(), /only available in DEV/);
+  assert.throws(() => prodApp.get('diagnoseDatabase_')(), /only available in DEV/);
   assert.deepEqual(prodApp.opened, []);
 
   const blank = new FakeSpreadsheet(DEV_SPREADSHEET_ID);
   const before = blank.snapshot();
-  const report = plain(devProject([blank]).get('diagnoseDatabase')());
+  const report = plain(devProject([blank]).get('diagnoseDatabase_')());
   assert.equal(report.ok, false);
   assert.equal(report.environmentMarker, null);
   assert.deepEqual(report.sheets.ROOMMATES, { exists: false });
@@ -148,7 +148,7 @@ test('diagnoseDatabase is DEV-only and read-only', () => {
 });
 
 test('diagnoseDatabase reports a healthy DEV database', () => {
-  const report = plain(devProject([setUpSpreadsheet(DEV_SPREADSHEET_ID, 'DEV')]).get('diagnoseDatabase')());
+  const report = plain(devProject([setUpSpreadsheet(DEV_SPREADSHEET_ID, 'DEV')]).get('diagnoseDatabase_')());
   assert.equal(report.ok, true);
   assert.equal(report.spreadsheetId, DEV_SPREADSHEET_ID);
   assert.equal(report.spreadsheetTimeZone, report.scriptTimeZone);
@@ -164,7 +164,7 @@ test('admin functions reject web app visitors other than the owner', () => {
       spreadsheets: [new FakeSpreadsheet(DEV_SPREADSHEET_ID)],
       activeUser,
     });
-    for (const name of ['setupDatabase', 'diagnoseDatabase']) {
+    for (const name of ['setupDatabase_', 'diagnoseDatabase_']) {
       assert.throws(() => project.get(name)(), /only be run by the script owner/, `${name} as ${JSON.stringify(activeUser)}`);
     }
     assert.deepEqual(project.opened, []);
@@ -180,7 +180,7 @@ test('the web app executes as the deploying owner, which the admin owner check r
 
 test('setupDatabase creates all sheets with headers and marks the environment', () => {
   const spreadsheet = new FakeSpreadsheet(DEV_SPREADSHEET_ID);
-  const summary = plain(devProject([spreadsheet]).get('setupDatabase')());
+  const summary = plain(devProject([spreadsheet]).get('setupDatabase_')());
   assert.deepEqual(summary, [
     'ROOMMATES: created',
     'ROTATION: created',
@@ -196,10 +196,10 @@ test('setupDatabase creates all sheets with headers and marks the environment', 
 test('setupDatabase is repeatable and keeps existing data', () => {
   const spreadsheet = setUpSpreadsheet(DEV_SPREADSHEET_ID, 'DEV');
   const project = devProject([spreadsheet]);
-  project.get('SheetDb').insert('ROOMMATES', { name: 'Alex', email: 'alex@example.com', active: true });
+  project.get('SheetDb').insert('ROOMMATES', { member_code: 'ALX-001', name: 'Alex', email: 'alex@example.com', active: true });
   const before = spreadsheet.snapshot();
 
-  const summary = plain(project.get('setupDatabase')());
+  const summary = plain(project.get('setupDatabase_')());
   assert.ok(summary.every((line) => line.endsWith('unchanged')));
   assert.equal(spreadsheet.snapshot(), before);
 });
@@ -208,10 +208,10 @@ test('setupDatabase appends missing columns without moving existing data', () =>
   const spreadsheet = new FakeSpreadsheet(DEV_SPREADSHEET_ID, {
     sheets: { ROOMMATES: [['name', 'roommate_id'], ['Alex', 'm1']] },
   });
-  const summary = plain(devProject([spreadsheet]).get('setupDatabase')());
-  assert.equal(summary[0], 'ROOMMATES: added email, active, created_at');
+  const summary = plain(devProject([spreadsheet]).get('setupDatabase_')());
+  assert.equal(summary[0], 'ROOMMATES: added member_code, email, telegram_username, active, welcome_sent_at, created_at');
   assert.deepEqual(spreadsheet.getSheetByName('ROOMMATES').values, [
-    ['name', 'roommate_id', 'email', 'active', 'created_at'],
+    ['name', 'roommate_id', 'member_code', 'email', 'telegram_username', 'active', 'welcome_sent_at', 'created_at'],
     ['Alex', 'm1'],
   ]);
 });
@@ -225,7 +225,7 @@ test('setupDatabase changes nothing if any sheet has an unfixable problem', () =
   for (const [label, values] of Object.entries(cases)) {
     const spreadsheet = new FakeSpreadsheet(DEV_SPREADSHEET_ID, { sheets: { ROOMMATES: values } });
     const before = spreadsheet.snapshot();
-    assert.throws(() => devProject([spreadsheet]).get('setupDatabase')(), /made no changes/, label);
+    assert.throws(() => devProject([spreadsheet]).get('setupDatabase_')(), /made no changes/, label);
     assert.equal(spreadsheet.snapshot(), before, label);
   }
 });
@@ -235,18 +235,18 @@ test('setupDatabase changes nothing if any sheet has an unfixable problem', () =
 test('insert assigns a stable ID and created_at and maps by the sheet header order', () => {
   const spreadsheet = new FakeSpreadsheet(DEV_SPREADSHEET_ID, {
     marker: 'DEV',
-    sheets: { ROOMMATES: [['email', 'created_at', 'active', 'name', 'roommate_id']] },
+    sheets: { ROOMMATES: [['welcome_sent_at', 'email', 'created_at', 'telegram_username', 'active', 'name', 'member_code', 'roommate_id']] },
   });
   const SheetDb = devProject([spreadsheet]).get('SheetDb');
 
-  const stored = SheetDb.insert('ROOMMATES', { name: 'Alex', email: 'alex@example.com', active: true });
+  const stored = SheetDb.insert('ROOMMATES', { member_code: 'ALX-001', name: 'Alex', email: 'alex@example.com', active: true });
   assert.match(stored.roommate_id, /^[0-9a-f-]{36}$/);
   const row = spreadsheet.getSheetByName('ROOMMATES').values[1];
-  assert.deepEqual([row[0], row[2], row[3], row[4]], ['alex@example.com', true, 'Alex', stored.roommate_id]);
-  assert.equal(Object.prototype.toString.call(row[1]), '[object Date]');
+  assert.deepEqual([row[0], row[1], row[3], row[4], row[5], row[6], row[7]], ['', 'alex@example.com', '', true, 'Alex', 'ALX-001', stored.roommate_id]);
+  assert.equal(Object.prototype.toString.call(row[2]), '[object Date]');
 
   assert.deepEqual(plain(SheetDb.list('ROOMMATES').map(({ created_at, ...rest }) => rest)), [
-    { email: 'alex@example.com', active: true, name: 'Alex', roommate_id: stored.roommate_id },
+    { welcome_sent_at: '', email: 'alex@example.com', telegram_username: '', active: true, name: 'Alex', member_code: 'ALX-001', roommate_id: stored.roommate_id },
   ]);
 });
 
