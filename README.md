@@ -25,7 +25,9 @@ Requires Node.js 18+ and the [Apps Script API](https://script.google.com/home/us
 
 ## Maintenance (temporary)
 
-Setup, diagnostics and adding roommates are private helpers (`setupDatabase_`, `diagnoseDatabase_`, `onboardRoommate_`) that the browser cannot call. `src/backend/EditorTools.js` holds three thin wrappers (`setupDatabase`, `diagnoseDatabase`, `onboardRoommate`) so you can run them from the Apps Script editor.
+Setup, diagnostics, adding roommates and resolving an overdue turn are private helpers (`setupDatabase_`, `diagnoseDatabase_`, `onboardRoommate_`, `resolveOverdueTurn_`) that the browser cannot call. `src/backend/EditorTools.js` holds four thin wrappers (`setupDatabase`, `diagnoseDatabase`, `onboardRoommate`, `resolveOverdueTurn`) so you can run them from the Apps Script editor.
+
+`diagnoseDatabase` (DEV only) also lists data rows in `ROTATION`, `CLEANING_LOGS` and `SWAPS` that the app would reject or misread, under `invalidRows`, with their Sheet row numbers. Rows marked `"breaksSchedule": true` stop the schedule from loading until they are fixed by hand. It only reads: nothing is changed or deleted.
 
 Those wrappers are temporary: every top-level function of a web app can be called from the browser. They are only acceptable while the web app is private to its owner, and they are protected twice more: the helpers run only for the script owner, and only while the Script Property `MAINTENANCE_UNTIL` is set to a time within the next hour (ISO, for example `2026-10-13T20:30:00Z`). Delete the property afterwards.
 
@@ -34,6 +36,10 @@ Those wrappers are temporary: every top-level function of a web app can be calle
 ### Adding a roommate
 
 In the project's **Script Properties** set `ONBOARD_NAME` and `ONBOARD_EMAIL`, optionally `ONBOARD_TELEGRAM` and `ONBOARD_POSITION` (a free rotation position; the default is after the last one). Open the maintenance window, then run `onboardRoommate` in the editor. It gives the roommate the next member code (for example `JHN-005`), adds their rotation position, and removes the `ONBOARD_*` properties. Running it again adds nobody, and no email is sent.
+
+### Resolving an overdue turn
+
+An overdue turn stays with its roommate until a log closes it. To close it without a cleaning, set the Script Properties `RESOLVE_DUE_DAY` (the turn's last day, the Sunday the app shows as "Was due", as `YYYY-MM-DD`) and `RESOLVE_REASON` (required, up to 300 characters). Open the maintenance window, then run `resolveOverdueTurn` in the editor. It appends one `admin_resolved` row to `CLEANING_LOGS` with the reason in `notes`, and the rotation moves on as it does after a completion. It refuses a turn that isn't overdue, a day that doesn't match, and a turn that a vacation skips automatically. Delete the `RESOLVE_*` properties afterwards.
 
 ## App sections
 
@@ -45,7 +51,7 @@ Roommates plan and cancel vacations in the app (**Vacations** card on the main s
 
 ## Browser tests
 
-`npm run test:e2e` runs Playwright against the real frontend files with a mocked backend (no Google account, no DEV or PROD access). It tests phone (375 and 390 px), tablet and desktop sizes in the installed Microsoft Edge; set `E2E_CHANNEL=chrome` to use Chrome. Screenshots land in `e2e/results/screenshots/` and are not committed. `npm test` stays the fast Node suite.
+`npm run test:e2e` runs Playwright against the real frontend files with a mocked backend (no Google account, no DEV or PROD access). It tests phone (375 and 390 px), tablet and desktop sizes in the installed Google Chrome; set `E2E_CHANNEL=msedge` to use Microsoft Edge. Screenshots land in `e2e/results/screenshots/` and are not committed. `npm test` stays the fast Node suite.
 
 ## Commands
 

@@ -55,15 +55,15 @@ test('the browser can call exactly the six page functions; maintenance logic is 
   }
 
   const project = loadProject();
-  for (const helper of ['setupDatabase_', 'diagnoseDatabase_', 'onboardRoommate_', 'assertMaintenanceAllowed_']) {
+  for (const helper of ['setupDatabase_', 'diagnoseDatabase_', 'onboardRoommate_', 'resolveOverdueTurn_', 'assertMaintenanceAllowed_']) {
     assert.equal(typeof project.get(helper), 'function', helper);
   }
   for (const [file, source] of [...backendFiles().map((f) => [f, read(`src/backend/${f}`)])]) {
     if (file === WRAPPERS) continue;
-    assert.doesNotMatch(source, /^function (setupDatabase|diagnoseDatabase|onboardRoommate)\(/m, `${file}: maintenance entry points must be private`);
+    assert.doesNotMatch(source, /^function (setupDatabase|diagnoseDatabase|onboardRoommate|resolveOverdueTurn)\(/m, `${file}: maintenance entry points must be private`);
   }
   for (const file of fs.readdirSync(path.join(ROOT, 'src', 'frontend'))) {
-    assert.doesNotMatch(read(`src/frontend/${file}`), /setupDatabase|diagnoseDatabase|onboardRoommate/, `${file}: the page never calls maintenance`);
+    assert.doesNotMatch(read(`src/frontend/${file}`), /setupDatabase|diagnoseDatabase|onboardRoommate|resolveOverdueTurn/, `${file}: the page never calls maintenance`);
   }
 });
 
@@ -77,12 +77,12 @@ test('the separate admin projects are gone, and there is one web app project per
   assert.doesNotMatch(read('README.md'), /push-admin|admin project|dev-admin|prod-admin/i);
 });
 
-test('the temporary editor wrappers are three one-line delegations, and only exist while the web app is owner-only', () => {
+test('the temporary editor wrappers are four one-line delegations, and only exist while the web app is owner-only', () => {
   const file = path.join(ROOT, 'src', 'backend', WRAPPERS);
   if (!fs.existsSync(file)) return; // deleted for release: nothing left to check
   const source = fs.readFileSync(file, 'utf8');
-  assert.deepEqual(browserCallable([WRAPPERS]), ['diagnoseDatabase', 'onboardRoommate', 'setupDatabase']);
-  for (const name of ['setupDatabase', 'diagnoseDatabase', 'onboardRoommate']) {
+  assert.deepEqual(browserCallable([WRAPPERS]), ['diagnoseDatabase', 'onboardRoommate', 'resolveOverdueTurn', 'setupDatabase']);
+  for (const name of ['setupDatabase', 'diagnoseDatabase', 'onboardRoommate', 'resolveOverdueTurn']) {
     assert.match(source, new RegExp(`function ${name}\\(\\) {\\n  return ${name}_\\(\\);\\n}`), name);
   }
   assert.match(source, /TEMPORARY/);
@@ -97,7 +97,7 @@ test('even while the wrappers exist, a browser caller is refused: closed window,
     const before = spreadsheet.snapshot();
     const project = webApp(spreadsheet, { maintenance: true, ...options });
     if (options.maintenance === false) project.properties.MAINTENANCE_UNTIL = undefined;
-    for (const name of ['setupDatabase', 'diagnoseDatabase', 'onboardRoommate']) assert.throws(() => project.get(name)(), pattern, name);
+    for (const name of ['setupDatabase', 'diagnoseDatabase', 'onboardRoommate', 'resolveOverdueTurn']) assert.throws(() => project.get(name)(), pattern, name);
     assert.deepEqual(project.opened, []);
     assert.equal(spreadsheet.snapshot(), before);
   }
@@ -226,7 +226,7 @@ test('an unknown error code can never reach the browser, and every browser-reach
 
   const messages = project.get('PUBLIC_ERROR_MESSAGES');
   // Only maintenance code, which the browser cannot call, uses the other codes.
-  const maintenanceOnly = ['ROOMMATE_INVALID', 'MAINTENANCE_CLOSED', 'ONBOARDING_INVALID', 'ONBOARDING_DUPLICATE', 'ONBOARDING_INCOMPLETE'];
+  const maintenanceOnly = ['ROOMMATE_INVALID', 'MAINTENANCE_CLOSED', 'ONBOARDING_INVALID', 'ONBOARDING_DUPLICATE', 'ONBOARDING_INCOMPLETE', 'RESOLVE_INVALID', 'TURN_NOT_OVERDUE', 'RESOLVE_MISMATCH'];
   for (const file of backendFiles()) {
     for (const [, code] of read(`src/backend/${file}`).matchAll(/appError_\('([A-Z_]+)'/g)) {
       assert.ok(code in messages || maintenanceOnly.includes(code), `${file}: ${code} has no public message`);

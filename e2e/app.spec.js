@@ -35,6 +35,32 @@ test.describe('tab navigation', () => {
     expect(problems).toEqual([]);
   });
 
+  // Regression: DEV v19 read event.target, so a tap on a tab's icon or label (or on the broom inside "Mark as cleaned")
+  // did nothing, and coming back to Schedule replayed the entrance animation.
+  test('a real tap on a tab\'s icon or label switches, and the broom inside Mark as cleaned opens the dialog', async ({ page }) => {
+    const { problems } = await openApp(page, { seed: HARI });
+    await expect(page.locator('.hero')).toBeVisible();
+    await page.waitForTimeout(700); // the first entrance animation finishes
+    for (const name of ['vacation', 'swaps', 'history', 'schedule']) {
+      for (const part of ['.tab-icon', 'span:not(.tab-icon)']) {
+        const inner = tab(page, 'schedule' === name ? 'history' : 'schedule').locator(part);
+        await inner.click(); // leave first, so every tap below is a real switch
+        await tab(page, name).locator(part).click();
+        await expect(panel(page, name), `${name} via ${part}`).toBeVisible();
+        await expect(tab(page, name)).toHaveAttribute('aria-current', 'page');
+      }
+    }
+    await tab(page, 'history').locator('.tab-icon').click();
+    await tab(page, 'schedule').locator('.tab-icon').click();
+    const animating = await page.evaluate(() => document.getAnimations().map((a) => a.animationName || a.transitionProperty));
+    expect(animating, 'returning to Schedule replays no entrance animation').toEqual([]);
+
+    await page.locator('.mark-button span[aria-hidden="true"]').click();
+    await expect(page.locator('#confirm-dialog')).toBeVisible();
+    expect(await calls(page, 'getRotationSchedule'), 'tapping tabs sends nothing').toHaveLength(1);
+    expect(problems).toEqual([]);
+  });
+
   test('swaps and history are honest work-in-progress pages', async ({ page }, testInfo) => {
     const { problems } = await openApp(page);
     for (const [name, title] of [['swaps', 'Swaps'], ['history', 'History']]) {
