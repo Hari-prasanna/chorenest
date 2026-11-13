@@ -1,4 +1,4 @@
-// TEMPORARY editor-only wrappers for setup and diagnostics.
+// TEMPORARY editor-only wrappers for setup, diagnostics, onboarding and resolving an overdue turn.
 // Every top-level function of a web app can be called from the browser, so these are only acceptable while the web
 // app is private to its owner. Delete this file before opening the web app to anyone else: scripts/clasp-env.js
 // refuses to push while it exists unless the manifest access is MYSELF.
@@ -13,4 +13,8 @@ function diagnoseDatabase() {
 
 function onboardRoommate() {
   return onboardRoommate_();
+}
+
+function resolveOverdueTurn() {
+  return resolveOverdueTurn_();
 }

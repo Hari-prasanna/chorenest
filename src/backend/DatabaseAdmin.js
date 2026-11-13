@@ -59,7 +59,10 @@ function setupDatabase_() {
   return summary;
 }
 
-/** Read-only DEV check of the spreadsheet connection, environment marker and schema. */
+/**
+ * Read-only DEV check of the spreadsheet connection, environment marker and schema, and of the data rows in
+ * ROTATION, CLEANING_LOGS and SWAPS (see RowDiagnostics.js). Invalid rows are listed under `invalidRows` by sheet row number.
+ */
 function diagnoseDatabase_() {
   assertMaintenanceAllowed_();
   if (getEnvironment_() !== 'DEV') throw new Error('diagnoseDatabase is only available in DEV.');
@@ -67,6 +70,7 @@ function diagnoseDatabase_() {
   const marker = getEnvironmentMarker_(db.spreadsheet);
 
   const sheets = {};
+  const readable = {};
   Object.keys(SCHEMAS).forEach(function (sheetName) {
     const sheet = db.spreadsheet.getSheetByName(sheetName);
     if (!sheet) {
@@ -80,7 +84,9 @@ function diagnoseDatabase_() {
       missing: inspection.missing,
       errors: inspection.errors,
     };
+    if (!inspection.missing.length && !inspection.errors.length) readable[sheetName] = { sheet: sheet, headers: inspection.headers };
   });
+  const invalidRows = findInvalidRows_(readable);
 
   const spreadsheetTimeZone = db.spreadsheet.getSpreadsheetTimeZone();
   const scriptTimeZone = Session.getScriptTimeZone();
@@ -88,7 +94,10 @@ function diagnoseDatabase_() {
     const sheet = sheets[name];
     return sheet.exists && !sheet.missing.length && !sheet.errors.length;
   });
-  const ok = marker === 'DEV' && timeZonesMatch_(spreadsheetTimeZone, scriptTimeZone) && schemaOk;
+  const rowsOk = Object.keys(invalidRows).every(function (name) {
+    return invalidRows[name].count === 0;
+  });
+  const ok = marker === 'DEV' && timeZonesMatch_(spreadsheetTimeZone, scriptTimeZone) && schemaOk && rowsOk;
   const report = {
     ok: ok,
     environment: db.environment,
@@ -98,6 +107,7 @@ function diagnoseDatabase_() {
     spreadsheetTimeZone: spreadsheetTimeZone,
     scriptTimeZone: scriptTimeZone,
     sheets: sheets,
+    invalidRows: invalidRows,
   };
   console.log(JSON.stringify(report, null, 2));
   return report;

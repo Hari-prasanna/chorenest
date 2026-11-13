@@ -1,8 +1,8 @@
 const { defineConfig } = require('@playwright/test');
 
 // Browser tests run against the real frontend files with a mocked google.script.run. They use the installed
-// Microsoft Edge (no browser download); set E2E_CHANNEL=chrome to use Chrome instead.
-const channel = process.env.E2E_CHANNEL || 'msedge';
+// Google Chrome (no browser download); set E2E_CHANNEL=msedge to use Microsoft Edge instead.
+const channel = process.env.E2E_CHANNEL || 'chrome';
 const device = (viewport, extra = {}) => ({ channel, viewport, ...extra });
 
 module.exports = defineConfig({
