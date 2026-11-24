@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { DEV_SPREADSHEET_ID, FakeSpreadsheet, fixtureSheet, loadProject } = require('./support/appsScript');
+const { asSignedIn } = require('./support/appsScript');
 
 // Maintenance gate
 
@@ -59,6 +60,6 @@ test('the schedule and cleaning APIs do not depend on the maintenance window', (
     now: new Date('2026-01-13T12:00:00Z'),
     maintenance: false,
   });
-  assert.equal(JSON.parse(JSON.stringify(project.get('getRotationSchedule')())).ok, true);
+  assert.equal(JSON.parse(JSON.stringify(project.get('getRotationSchedule')(asSignedIn(project)))).ok, true);
   assert.equal(JSON.parse(JSON.stringify(project.get('markCleaned')(null))).error.code, 'INVALID_REQUEST');
 });

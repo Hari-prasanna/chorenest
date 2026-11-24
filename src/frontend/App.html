@@ -1,5 +1,6 @@
 <script>
-// Page wiring: loads the schedule through google.script.run and shows the loading, empty, error or schedule view.
+// Page wiring: sign-in, the first password change, and the signed-in app (schedule, vacations, profile).
+// Every server call carries the session token; who the roommate is always comes back from the server (`viewer`).
 const appElement = document.getElementById('app');
 const dialogElement = document.getElementById('confirm-dialog');
 const vacationDialog = document.getElementById('vacation-dialog');
@@ -7,6 +8,8 @@ const profileDialog = document.getElementById('profile-dialog');
 const profileButton = document.getElementById('profile-button');
 const betaNotice = document.getElementById('beta-notice');
 const tabsElement = document.getElementById('tabs');
+const authScreen = document.getElementById('auth-screen');
+const mainElement = document.getElementById('main-content');
 const panels = {
   schedule: document.getElementById('panel-schedule'),
   vacation: document.getElementById('panel-vacation'),
@@ -14,16 +17,210 @@ const panels = {
   history: document.getElementById('panel-history'),
 };
 let currentSchedule = null;
-let selectedRoommateId = readSelectedRoommate();
+let viewer = null; // { roommate_id, name, role, must_change_password } as reported by the server
+let authBusy = false;
+// Bumped whenever the session starts or ends, so answers that arrive for an earlier session are ignored.
+let sessionEpoch = 0;
 let pendingClean = null;
 let saving = false;
 let notice = null;
 let loadedAt = 0;
-const STALE_AFTER_MS = 5 * 60 * 1000; // Coming back to Schedule after this long fetches a fresh copy.
+const STALE_AFTER_MS = 5 * 60 * 1000; // Coming back to Schedule or Vacation after this long fetches a fresh copy.
+
+// Household vacations: loaded once after the first schedule answer, then after every vacation change.
 let vacations = null;
+let vacationStatus = 'idle'; // idle | loading | ready | error | network
+let vacationsLoadedAt = 0;
+let vacationNotice = null;
 let vacationDraft = { start: '', back: '' };
 let pendingVacationCancel = null;
+let pendingEdit = null; // { vacation, draft } while the edit form is open
+let pendingEnd = null;
 let vacationBusy = false;
+// Refusals that mean the page's copy is out of date: the form closes and the list is reloaded.
+const STALE_VACATION_CODES = ['VACATION_CHANGED', 'VACATION_NOT_FOUND', 'RECORD_NOT_FOUND', 'VACATION_ENDED', 'NOT_YOUR_VACATION'];
+
+function viewerId() {
+  return viewer ? viewer.roommate_id : null;
+}
+
+// ---------- signed out / password change / signed in ----------
+
+function errorCodeOf(result) {
+  return result && result.ok === false && result.error && typeof result.error.code === 'string' ? result.error.code : null;
+}
+
+/**
+ * Handles answers that are about the session rather than the request. Returns true when it took over the page:
+ * an ended or unknown session goes back to sign-in, a pending temporary password goes to the password form.
+ */
+function handleSessionRefusal(result) {
+  const code = errorCodeOf(result);
+  if (SESSION_END_CODES.indexOf(code) !== -1) {
+    endSession(code);
+    return true;
+  }
+  if (code === 'PASSWORD_CHANGE_REQUIRED') {
+    showPasswordChange('');
+    return true;
+  }
+  return false;
+}
+
+function setSignedIn(signedIn) {
+  authScreen.hidden = signedIn;
+  tabsElement.hidden = !signedIn;
+  mainElement.hidden = !signedIn;
+  profileButton.hidden = !signedIn;
+  betaNotice.hidden = !signedIn || readStored(BETA_STORAGE_KEY) === 'dismissed' || !betaNotice.innerHTML;
+}
+
+function focusById(id) {
+  const element = document.getElementById(id);
+  if (element && element.focus) element.focus();
+}
+
+function showSignIn(message, username) {
+  authBusy = false;
+  setSignedIn(false);
+  authScreen.innerHTML = renderSignIn({ username: username || '', message: message || '' });
+  focusById(username ? 'sign-in-password' : 'sign-in-username');
+}
+
+function showPasswordChange(message) {
+  authBusy = false;
+  closeDialogs();
+  setSignedIn(false);
+  authScreen.innerHTML = renderPasswordChange({ name: viewer ? displayName(viewer) : '', message: message || '' });
+  focusById('current-password');
+}
+
+/** Forgets everything shown for the previous session, so the next person sees nothing of it. */
+function resetSignedInState() {
+  sessionEpoch++;
+  currentSchedule = null;
+  viewer = null;
+  pendingClean = null;
+  saving = false;
+  notice = null;
+  vacations = null;
+  vacationStatus = 'idle';
+  vacationNotice = null;
+  vacationBusy = false;
+  closeDialogs();
+  appElement.innerHTML = '';
+  panels.vacation.innerHTML = '';
+  refreshProfile();
+}
+
+function closeDialogs() {
+  [dialogElement, vacationDialog, profileDialog].forEach(function (dialog) {
+    if (dialog.open) dialog.close();
+  });
+  pendingVacationCancel = null;
+  pendingEdit = null;
+  pendingEnd = null;
+}
+
+function endSession(code) {
+  clearSession();
+  resetSignedInState();
+  showSignIn(authMessage(code));
+}
+
+function enterApp() {
+  sessionEpoch++;
+  setSignedIn(true);
+  authScreen.innerHTML = '';
+  selectTab('schedule');
+  renderVacationPanel();
+  refreshProfile();
+  loadSchedule();
+}
+
+function signIn() {
+  if (authBusy) return;
+  const username = document.getElementById('sign-in-username').value.trim();
+  const password = document.getElementById('sign-in-password').value;
+  if (!username || !password) {
+    showSignIn(authMessage('INVALID_REQUEST'), username);
+    return;
+  }
+  authBusy = true;
+  authScreen.innerHTML = renderSignIn({ username: username, busy: true });
+  const epoch = sessionEpoch;
+  google.script.run
+    .withSuccessHandler(function (result) {
+      if (epoch !== sessionEpoch) return;
+      if (result && result.ok === true && result.session && isUsableSession(result.session) && result.viewer) {
+        saveSession(result.session);
+        viewer = result.viewer;
+        if (viewer.must_change_password === true) showPasswordChange('');
+        else enterApp();
+        return;
+      }
+      showSignIn(authMessage(errorCodeOf(result)), username);
+    })
+    .withFailureHandler(function () {
+      if (epoch === sessionEpoch) showSignIn(authMessage('REQUEST_FAILED'), username);
+    })
+    .signIn({ username: username, password: password });
+}
+
+function changePassword() {
+  if (authBusy) return;
+  const current = document.getElementById('current-password').value;
+  const next = document.getElementById('new-password').value;
+  const repeat = document.getElementById('repeat-password').value;
+  const problem = passwordChangeProblem(current, next, repeat);
+  if (problem) {
+    showPasswordChange(problem);
+    return;
+  }
+  authBusy = true;
+  authScreen.innerHTML = renderPasswordChange({ name: viewer ? displayName(viewer) : '', busy: true });
+  const epoch = sessionEpoch;
+  google.script.run
+    .withSuccessHandler(function (result) {
+      if (epoch !== sessionEpoch) return;
+      if (result && result.ok === true && result.session && isUsableSession(result.session) && result.viewer) {
+        saveSession(result.session);
+        viewer = result.viewer;
+        enterApp();
+        return;
+      }
+      if (SESSION_END_CODES.indexOf(errorCodeOf(result)) !== -1) {
+        endSession(errorCodeOf(result));
+        return;
+      }
+      showPasswordChange(authMessage(errorCodeOf(result)));
+    })
+    .withFailureHandler(function () {
+      if (epoch === sessionEpoch) showPasswordChange(authMessage('REQUEST_FAILED'));
+    })
+    .changePassword({ token: sessionToken(), current_password: current, new_password: next });
+}
+
+/** Signs out here at once; the server also ends this roommate's other sessions. */
+function signOut() {
+  const token = sessionToken();
+  clearSession();
+  resetSignedInState();
+  showSignIn(authMessage('SIGNED_OUT'));
+  if (token) google.script.run.withSuccessHandler(function () {}).withFailureHandler(function () {}).signOut({ token: token });
+}
+
+function togglePassword(button) {
+  const input = document.getElementById(button.getAttribute('data-target'));
+  if (!input) return;
+  const show = input.type === 'password';
+  input.type = show ? 'text' : 'password';
+  button.setAttribute('aria-pressed', show ? 'true' : 'false');
+  button.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+  button.textContent = show ? 'Hide' : 'Show';
+}
+
+// ---------- schedule ----------
 
 function show(html, busy) {
   panels.schedule.setAttribute('data-settled', 'false'); // New content gets its entrance animation once.
@@ -31,35 +228,39 @@ function show(html, busy) {
   appElement.setAttribute('aria-busy', busy ? 'true' : 'false');
 }
 
-function showResult(result) {
+function showResult(result, quiet) {
+  if (handleSessionRefusal(result)) return;
+  if (result && result.viewer && typeof result.viewer.roommate_id === 'string') viewer = result.viewer;
+  // A quiet refresh keeps the page as it is unless a good schedule arrives.
+  if (quiet && !isValidSchedule(result)) return;
   currentSchedule = isValidSchedule(result) ? result : null;
   if (currentSchedule) loadedAt = Date.now();
-  if (currentSchedule && selectedRoommateId !== validSelection(currentSchedule, selectedRoommateId)) {
-    selectedRoommateId = null;
-    saveSelectedRoommate(null); // That roommate was removed or deactivated.
-  }
   try {
-    show(renderResult(result, selectedRoommateId, notice), false);
+    show(renderResult(result, viewerId(), notice, awayView()), false);
   } catch (error) {
     show(renderProblem('UNEXPECTED_RESPONSE'), false);
   }
+  if (quiet) panels.schedule.setAttribute('data-settled', 'true'); // updated in place, without the entrance animation
   notice = null; // A banner is shown once, with the refreshed schedule.
   refreshProfile();
+  renderVacationPanel();
+  if (vacationStatus === 'idle') loadVacations();
 }
 
 function showRequestFailure() {
   notice = null;
   show(renderProblem('REQUEST_FAILED'), false);
+  if (vacationStatus === 'idle') loadVacations();
 }
 
-// The profile entry only reports what the page knows: a picked name (not verified) or nothing.
+// The profile entry shows who the server says is signed in.
 function refreshProfile() {
-  profileButton.innerHTML = renderProfileButton(currentSchedule, selectedRoommateId);
-  profileButton.setAttribute('aria-label', profileLabel(currentSchedule, selectedRoommateId));
+  profileButton.innerHTML = renderProfileButton(viewer);
+  profileButton.setAttribute('aria-label', profileLabel(viewer));
 }
 
-// Navigation only shows and hides sections, so switching is instant and sends nothing. Leaving the schedule marks it
-// settled, so coming back doesn't replay the entrance animation. Only an old schedule is fetched again.
+// Navigation only shows and hides sections, so switching is instant. Leaving the schedule marks it settled, so coming
+// back doesn't replay the entrance animation. Only an old schedule or an old vacation list is fetched again.
 function selectTab(tab) {
   if (TABS.indexOf(tab) === -1) return;
   if (!panels.schedule.hidden) panels.schedule.setAttribute('data-settled', 'true');
@@ -70,6 +271,7 @@ function selectTab(tab) {
     button.setAttribute('aria-current', button.getAttribute('data-tab') === tab ? 'page' : 'false');
   });
   if (tab === 'schedule' && currentSchedule && !saving && Date.now() - loadedAt > STALE_AFTER_MS) loadSchedule();
+  if (tab === 'vacation' && vacationStatus === 'ready' && !vacationBusy && Date.now() - vacationsLoadedAt > STALE_AFTER_MS) loadVacations();
 }
 
 function showBetaNoticeOnce() {
@@ -84,26 +286,32 @@ function dismissBetaNotice() {
   betaNotice.hidden = true;
 }
 
-function changeName() {
-  profileDialog.close();
-  selectTab('schedule');
-  const select = document.getElementById('who-select');
-  if (select && select.focus) select.focus();
+function openProfile() {
+  if (!viewer) return;
+  profileDialog.innerHTML = renderProfileDialog(viewer);
+  if (!profileDialog.open) profileDialog.showModal();
 }
 
-function loadSchedule() {
-  show(renderLoading(), true);
+// `quiet` refreshes in the background: the current schedule stays visible until the new one arrives, and a failed
+// refresh leaves it in place.
+function loadSchedule(quiet) {
+  if (!quiet) show(renderLoading(), true);
+  const epoch = sessionEpoch;
   google.script.run
-    .withSuccessHandler(showResult)
-    .withFailureHandler(showRequestFailure)
-    .getRotationSchedule();
+    .withSuccessHandler(function (result) {
+      if (epoch === sessionEpoch) showResult(result, quiet === true);
+    })
+    .withFailureHandler(function () {
+      if (epoch === sessionEpoch && quiet !== true) showRequestFailure();
+    })
+    .getRotationSchedule({ token: sessionToken() });
 }
 
 function openConfirm() {
-  const turn = currentSchedule && markableTurn(currentSchedule, selectedRoommateId);
+  const turn = currentSchedule && markableTurn(currentSchedule, viewerId());
   if (!turn || saving) return;
-  pendingClean = { roommate_id: selectedRoommateId, rotation_id: turn.rotation_id, due_at: turn.due_at };
-  dialogElement.innerHTML = renderConfirmDialog(currentSchedule, selectedRoommateId);
+  pendingClean = { rotation_id: turn.rotation_id, due_at: turn.due_at };
+  dialogElement.innerHTML = renderConfirmDialog(currentSchedule, viewerId());
   dialogElement.showModal();
 }
 
@@ -119,15 +327,18 @@ function finishClean(result) {
 function submitClean() {
   if (!pendingClean || saving) return;
   saving = true;
-  const request = pendingClean;
-  const name = rosterName(currentSchedule, request.roommate_id);
+  const request = { token: sessionToken(), rotation_id: pendingClean.rotation_id, due_at: pendingClean.due_at };
+  const name = rosterName(currentSchedule, viewerId());
+  const epoch = sessionEpoch;
   dialogElement.innerHTML = renderSaving();
   google.script.run
     .withSuccessHandler(function (result) {
+      if (epoch !== sessionEpoch) return;
+      if (handleSessionRefusal(result)) return;
       finishClean(cleanNotice(result, name));
     })
     .withFailureHandler(function () {
-      finishClean(unknownCleanNotice());
+      if (epoch === sessionEpoch) finishClean(unknownCleanNotice());
     })
     .markCleaned(request);
 }
@@ -145,63 +356,129 @@ function actionOf(event) {
   return source ? source.getAttribute('data-action') : null;
 }
 
-// Vacations: loaded when the dialog opens. Changes are made under the picked name, which is an unverified claim.
+// ---------- vacations (always the signed-in roommate's own; the server takes who that is from the session) ----------
+
 function pickedName() {
-  return currentSchedule && validSelection(currentSchedule, selectedRoommateId) ? rosterName(currentSchedule, selectedRoommateId) : null;
+  return viewer ? displayName(viewer) : null;
 }
 
-function showVacationDialog(html) {
-  vacationDialog.innerHTML = html;
-  if (!vacationDialog.open) vacationDialog.showModal();
+function awayView() {
+  return { status: vacationStatus === 'idle' ? 'loading' : vacationStatus, vacations: vacations || [], nowMs: Date.now() };
 }
 
-function showVacationList(result, vacationNotice) {
-  if (!(result && result.ok === true && Array.isArray(result.vacations))) {
-    showVacationDialog(renderVacationProblem(result && result.error ? result.error.code : 'UNEXPECTED_RESPONSE'));
-    return;
-  }
-  vacations = result.vacations;
-  try {
-    showVacationDialog(renderVacationList(vacations, pickedName() ? selectedRoommateId : null, pickedName(), vacationNotice));
-  } catch (error) {
-    showVacationDialog(renderVacationProblem('UNEXPECTED_RESPONSE'));
-  }
+function renderVacationPanel() {
+  const name = pickedName();
+  panels.vacation.innerHTML = renderVacationOverview({
+    status: vacationStatus === 'idle' ? 'loading' : vacationStatus,
+    vacations: vacations || [],
+    selectedId: name ? viewerId() : null,
+    selectedName: name,
+    notice: vacationNotice,
+  });
 }
 
-function loadVacations(vacationNotice) {
+// "Who's away" lives inside the schedule, so only its own slot is replaced.
+function refreshAway() {
+  const slot = currentSchedule ? document.getElementById('away-slot') : null;
+  if (slot) slot.innerHTML = renderAwaySummary(awayView());
+}
+
+function loadVacations() {
+  if (vacations === null) vacationStatus = 'loading';
+  renderVacationPanel();
+  refreshAway();
+  const epoch = sessionEpoch;
   google.script.run
     .withSuccessHandler(function (result) {
-      showVacationList(result, vacationNotice);
+      if (epoch !== sessionEpoch || handleSessionRefusal(result)) return;
+      if (isValidVacationList(result)) {
+        vacations = result.vacations;
+        vacationStatus = 'ready';
+        vacationsLoadedAt = Date.now();
+      } else {
+        vacations = null;
+        vacationStatus = 'error';
+      }
+      renderVacationPanel();
+      refreshAway();
     })
     .withFailureHandler(function () {
-      showVacationDialog(renderVacationProblem('REQUEST_FAILED'));
+      if (epoch !== sessionEpoch) return;
+      vacations = null;
+      vacationStatus = 'network';
+      renderVacationPanel();
+      refreshAway();
     })
-    .listVacations();
+    .listVacations({ token: sessionToken() });
 }
 
-function openVacations() {
-  if (!currentSchedule || vacationBusy) return;
-  showVacationDialog(renderVacationLoading());
-  loadVacations(null);
+function retryVacations() {
+  vacationNotice = null;
+  vacations = null;
+  loadVacations();
+}
+
+// autofocus only acts when a dialog opens, so new content in an open dialog moves the focus itself.
+function showVacationDialog(html) {
+  vacationDialog.innerHTML = html;
+  if (!vacationDialog.open) {
+    vacationDialog.showModal();
+    return;
+  }
+  const target = vacationDialog.querySelector ? vacationDialog.querySelector('[autofocus]') : null;
+  if (target && target.focus) target.focus();
+}
+
+function closeVacationDialog() {
+  vacationDraft = { start: '', back: '' };
+  pendingVacationCancel = null;
+  pendingEdit = null;
+  pendingEnd = null;
+  if (vacationDialog.open) vacationDialog.close();
+}
+
+/** Your own vacation with this ID from the loaded list, in one of `states`, or null. */
+function ownVacation(vacationId, states) {
+  const vacation = vacations && vacations.find(function (candidate) {
+    return candidate.vacation_id === vacationId;
+  });
+  return vacation && viewer && vacation.roommate_id === viewerId() && states.indexOf(vacation.state) !== -1 ? vacation : null;
 }
 
 function planVacation() {
   const name = pickedName();
-  if (name && !vacationBusy) showVacationDialog(renderVacationForm(name, todayInBerlin(), vacationDraft, ''));
+  if (!name || vacationBusy) return;
+  vacationNotice = null;
+  renderVacationPanel();
+  showVacationDialog(renderVacationForm(name, todayInBerlin(), vacationDraft, ''));
 }
 
-// After a change the schedule is reloaded behind the dialog, and the list shows what the Sheet now says.
+// After a change the dialog closes, the schedule and the list are reloaded, and the tab says what happened.
 function afterVacationChange(result, successText) {
   vacationBusy = false;
+  if (handleSessionRefusal(result)) return;
+  closeVacationDialog();
   if (result && result.ok === true) {
-    vacationDraft = { start: '', back: '' };
-    loadSchedule();
-    loadVacations({ kind: 'success', text: successText });
-    return;
+    vacationNotice = { kind: 'success', text: successText };
+    loadSchedule(true);
+  } else if (result && result.ok === false && result.error) {
+    vacationNotice = { kind: 'error', text: vacationErrorMessage(result.error.code) };
+  } else {
+    vacationNotice = { kind: 'info', text: 'We couldn’t confirm that it saved. Check the list before trying again.' };
   }
-  loadVacations(result && result.ok === false && result.error
-    ? { kind: 'error', text: vacationErrorMessage(result.error.code) }
-    : { kind: 'info', text: 'We couldn’t confirm that it saved. Check the list before trying again.' });
+  loadVacations();
+}
+
+/** Runs one vacation call; answers for an earlier session are dropped. */
+function runVacationCall(name, request, onResult) {
+  const epoch = sessionEpoch;
+  google.script.run
+    .withSuccessHandler(function (result) {
+      if (epoch === sessionEpoch) onResult(result);
+    })
+    .withFailureHandler(function () {
+      if (epoch === sessionEpoch) afterVacationChange(null, '');
+    })[name](Object.assign({ token: sessionToken() }, request));
 }
 
 function submitVacation() {
@@ -215,54 +492,140 @@ function submitVacation() {
   }
   vacationBusy = true;
   showVacationDialog(renderVacationSaving());
-  google.script.run
-    .withSuccessHandler(function (result) {
-      if (result && result.ok === false && result.error) {
-        vacationBusy = false;
-        showVacationDialog(renderVacationForm(name, todayInBerlin(), vacationDraft, vacationErrorMessage(result.error.code)));
-        return;
-      }
-      afterVacationChange(result, 'Vacation saved. Your turns while you are away are skipped.');
-    })
-    .withFailureHandler(function () {
-      afterVacationChange(null, '');
-    })
-    .saveVacation({ roommate_id: selectedRoommateId, start_date: vacationDraft.start, return_date: vacationDraft.back });
+  runVacationCall('saveVacation', { start_date: vacationDraft.start, return_date: vacationDraft.back }, function (result) {
+    if (errorCodeOf(result) && SESSION_END_CODES.concat(['PASSWORD_CHANGE_REQUIRED']).indexOf(errorCodeOf(result)) === -1) {
+      vacationBusy = false;
+      showVacationDialog(renderVacationForm(name, todayInBerlin(), vacationDraft, vacationErrorMessage(result.error.code)));
+      return;
+    }
+    afterVacationChange(result, 'Vacation saved. Your turns while you are away are skipped.');
+  });
+}
+
+function editVacation(vacationId) {
+  const vacation = ownVacation(vacationId, ['upcoming', 'away']);
+  if (!vacation || vacationBusy) return;
+  vacationNotice = null;
+  renderVacationPanel();
+  pendingEdit = { vacation: vacation, draft: { start: berlinDateInput(vacation.start_date), back: berlinDateInput(vacation.return_date) } };
+  showVacationDialog(renderVacationEditForm(vacation, todayInBerlin(), pendingEdit.draft, ''));
+}
+
+// Whether a refusal is explained inside the open dialog (rather than closing it).
+function explainInDialog(result) {
+  const code = errorCodeOf(result);
+  return Boolean(code) && STALE_VACATION_CODES.indexOf(code) === -1 && SESSION_END_CODES.concat(['PASSWORD_CHANGE_REQUIRED']).indexOf(code) === -1;
+}
+
+// The request carries the dates the page showed, so the server refuses it if the vacation changed meanwhile.
+function submitEdit() {
+  if (!pendingEdit || vacationBusy || !viewer) return;
+  const edit = pendingEdit;
+  const started = edit.vacation.state === 'away';
+  edit.draft = {
+    start: started ? berlinDateInput(edit.vacation.start_date) : document.getElementById('vacation-start').value,
+    back: document.getElementById('vacation-return').value,
+  };
+  const problem = vacationFormProblem(edit.draft.start, edit.draft.back);
+  if (problem) {
+    showVacationDialog(renderVacationEditForm(edit.vacation, todayInBerlin(), edit.draft, problem));
+    return;
+  }
+  vacationBusy = true;
+  showVacationDialog(renderVacationSaving());
+  runVacationCall('updateVacation', {
+    vacation_id: edit.vacation.vacation_id,
+    start_date: edit.draft.start,
+    return_date: edit.draft.back,
+    seen_start: edit.vacation.start_date,
+    seen_return: edit.vacation.return_date,
+  }, function (result) {
+    if (explainInDialog(result)) {
+      vacationBusy = false;
+      showVacationDialog(renderVacationEditForm(edit.vacation, todayInBerlin(), edit.draft, vacationErrorMessage(result.error.code)));
+      return;
+    }
+    afterVacationChange(result, result && result.changed === false ? 'Nothing changed: those are already the dates.' : 'Vacation dates updated.');
+  });
+}
+
+function askEndVacation(vacationId) {
+  const vacation = ownVacation(vacationId, ['away']);
+  if (!vacation || vacationBusy) return;
+  vacationNotice = null;
+  renderVacationPanel();
+  pendingEnd = vacation;
+  showVacationDialog(renderVacationEndConfirm(vacation, new Date(Date.now()).toISOString()));
+}
+
+function confirmEndVacation() {
+  if (!pendingEnd || vacationBusy || !viewer) return;
+  const vacation = pendingEnd;
+  pendingEnd = null;
+  vacationBusy = true;
+  showVacationDialog(renderVacationSaving());
+  runVacationCall('endVacation', { vacation_id: vacation.vacation_id, seen_start: vacation.start_date, seen_return: vacation.return_date }, function (result) {
+    // A refusal (a processed turn, a recorded skip, ...) is explained where the roommate is looking.
+    if (explainInDialog(result)) {
+      vacationBusy = false;
+      showVacationDialog(renderVacationEndProblem(result.error.code));
+      return;
+    }
+    afterVacationChange(result, 'Welcome back! Today is your first day back.');
+  });
 }
 
 function askCancelVacation(vacationId) {
   const vacation = vacations && vacations.find(function (candidate) {
     return candidate.vacation_id === vacationId;
   });
-  if (!vacation || vacationBusy || !pickedName() || vacation.roommate_id !== selectedRoommateId || !vacation.cancellable) return;
+  if (!vacation || vacationBusy || !viewer || vacation.roommate_id !== viewerId() || !vacation.cancellable) return;
+  vacationNotice = null;
+  renderVacationPanel();
   pendingVacationCancel = vacation;
   showVacationDialog(renderVacationCancelConfirm(vacation));
 }
 
 function confirmCancelVacation() {
-  if (!pendingVacationCancel || vacationBusy || !pickedName()) return;
-  const request = { roommate_id: selectedRoommateId, vacation_id: pendingVacationCancel.vacation_id };
+  if (!pendingVacationCancel || vacationBusy || !viewer) return;
+  const vacationId = pendingVacationCancel.vacation_id;
   pendingVacationCancel = null;
   vacationBusy = true;
   showVacationDialog(renderVacationSaving());
-  google.script.run
-    .withSuccessHandler(function (result) {
-      afterVacationChange(result, 'Vacation cancelled.');
-    })
-    .withFailureHandler(function () {
-      afterVacationChange(null, '');
-    })
-    .cancelVacation(request);
+  runVacationCall('cancelVacation', { vacation_id: vacationId }, function (result) {
+    afterVacationChange(result, 'Vacation cancelled.');
+  });
 }
+
+// ---------- events ----------
+
+authScreen.addEventListener('submit', function (event) {
+  if (event.preventDefault) event.preventDefault(); // the page never navigates; the form only enables Enter
+  const form = event.target && event.target.getAttribute ? event.target.getAttribute('data-form') : null;
+  if (form === 'sign-in') signIn();
+  if (form === 'change-password') changePassword();
+});
+
+authScreen.addEventListener('click', function (event) {
+  const action = actionOf(event);
+  if (action === 'toggle-password') togglePassword(carrier(event, '[data-action]'));
+  if (action === 'sign-out' && !authBusy) signOut();
+});
 
 appElement.addEventListener('click', function (event) {
   const action = actionOf(event);
   if (action === 'retry') loadSchedule();
   if (action === 'mark-cleaned') openConfirm();
+  if (action === 'retry-vacations') retryVacations();
 });
 
 panels.vacation.addEventListener('click', function (event) {
-  if (actionOf(event) === 'open-vacations') openVacations();
+  const action = actionOf(event);
+  if (action === 'plan-vacation') planVacation();
+  if (action === 'retry-vacations') retryVacations();
+  if (action === 'cancel-vacation') askCancelVacation(carrier(event, '[data-action]').getAttribute('data-vacation-id'));
+  if (action === 'edit-vacation') editVacation(carrier(event, '[data-action]').getAttribute('data-vacation-id'));
+  if (action === 'end-vacation') askEndVacation(carrier(event, '[data-action]').getAttribute('data-vacation-id'));
 });
 
 tabsElement.addEventListener('click', function (event) {
@@ -275,32 +638,22 @@ betaNotice.addEventListener('click', function (event) {
 });
 
 profileButton.addEventListener('click', function () {
-  profileDialog.innerHTML = renderProfileDialog(currentSchedule, selectedRoommateId);
-  profileDialog.showModal();
+  openProfile();
 });
 
 profileDialog.addEventListener('click', function (event) {
   const action = actionOf(event);
-  if (action === 'change-name') changeName();
   if (action === 'close-profile') profileDialog.close();
+  if (action === 'sign-out') signOut();
 });
 
 vacationDialog.addEventListener('click', function (event) {
   const action = actionOf(event);
-  if (action === 'retry-vacations') openVacations();
-  if (action === 'plan-vacation') planVacation();
   if (action === 'save-vacation') submitVacation();
-  if (action === 'cancel-vacation') askCancelVacation(carrier(event, '[data-action]').getAttribute('data-vacation-id'));
   if (action === 'confirm-cancel-vacation') confirmCancelVacation();
-  if (action === 'back-to-vacations') {
-    pendingVacationCancel = null;
-    showVacationList({ ok: true, vacations: vacations || [] }, null);
-  }
-  if (action === 'close-vacation') {
-    vacationDraft = { start: '', back: '' };
-    pendingVacationCancel = null;
-    vacationDialog.close();
-  }
+  if (action === 'save-edit') submitEdit();
+  if (action === 'confirm-end-vacation') confirmEndVacation();
+  if (action === 'close-vacation' && !vacationBusy) closeVacationDialog();
 });
 
 dialogElement.addEventListener('click', function (event) {
@@ -309,21 +662,14 @@ dialogElement.addEventListener('click', function (event) {
   if (action === 'cancel-clean') dialogElement.close();
 });
 
-// Replaces only the greeting and the action slot, so the picker keeps keyboard focus.
-appElement.addEventListener('change', function (event) {
-  if (!currentSchedule || !event.target || event.target.getAttribute('data-action') !== 'select-roommate') return;
-  selectedRoommateId = validSelection(currentSchedule, event.target.value);
-  saveSelectedRoommate(selectedRoommateId);
-  document.getElementById('who-text').innerHTML = renderIdentityText(currentSchedule, selectedRoommateId);
-  document.getElementById('mark-action').innerHTML = renderMarkAction(markableTurn(currentSchedule, selectedRoommateId) !== null);
-  refreshProfile();
-});
+// ---------- start ----------
 
-panels.vacation.innerHTML = renderVacationPage();
+writeStored(LEGACY_PICK_KEY, null); // the old unverified name pick is no longer used
 panels.swaps.innerHTML = renderWorkInProgress('swaps');
 panels.history.innerHTML = renderWorkInProgress('history');
-refreshProfile();
 showBetaNoticeOnce();
 bindThemeToggle(document.getElementById('theme-toggle'));
-loadSchedule();
+// A stored session is tried straight away: the schedule answer says who is signed in, or sends the page to sign-in.
+if (readSession()) enterApp();
+else showSignIn('');
 </script>

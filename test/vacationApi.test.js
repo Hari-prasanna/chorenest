@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { DEV_SPREADSHEET_ID, FIXTURES, FakeSpreadsheet, fixtureSheet, loadProject, plain } = require('./support/appsScript');
+const { asSignedIn } = require('./support/appsScript');
 
 const [ALEX, SAM, JO] = FIXTURES.ROOMMATES.map((r) => r.roommate_id);
 const ALEX_SLOT = FIXTURES.ROTATION[0].rotation_id;
@@ -39,7 +40,7 @@ function database(vacations = [], extra = {}) {
 
 const server = (spreadsheet, now = NOW, options = {}) =>
   loadProject({ properties: { ENVIRONMENT: 'DEV', SPREADSHEET_ID: DEV_SPREADSHEET_ID }, spreadsheets: [spreadsheet], now, maintenance: false, ...options });
-const call = (project, name, request) => plain(project.get(name)(request));
+const call = (project, name, request) => plain(project.get(name)(asSignedIn(project, request)));
 const save = (project, request) => call(project, 'saveVacation', request);
 const cancel = (project, request) => call(project, 'cancelVacation', request);
 const list = (project) => call(project, 'listVacations');
@@ -97,8 +98,7 @@ test('only real, sensible dates are accepted, and nothing is written or locked f
     [{ return_date: '2026-01-09' }, 'VACATION_ORDER'], [{ return_date: '2026-01-08' }, 'VACATION_ORDER'],
     [{ return_date: '2026-05-10' }, 'VACATION_TOO_LONG'],
     [{ start_date: '2027-01-10', return_date: '2027-01-12' }, 'VACATION_TOO_FAR'],
-    [{ role: 'admin' }, 'INVALID_REQUEST'], [{ is_admin: true }, 'INVALID_REQUEST'], [{ roommate_id: 'has space' }, 'INVALID_REQUEST'],
-    [{ roommate_id: '' }, 'INVALID_REQUEST'], [{ roommate_id: ['a'] }, 'INVALID_REQUEST'], [{ roommate_id: 'x'.repeat(65) }, 'INVALID_REQUEST'],
+    [{ role: 'admin' }, 'INVALID_REQUEST'], [{ is_admin: true }, 'INVALID_REQUEST'], [{ token: 5 }, 'INVALID_REQUEST'],
   ];
   for (const [change, code] of cases) {
     const spreadsheet = database();
@@ -108,7 +108,13 @@ test('only real, sensible dates are accepted, and nothing is written or locked f
     assert.equal(spreadsheet.snapshot(), before, JSON.stringify(change));
     assert.deepEqual(project.lock.events, [], 'invalid requests never reach the lock');
   }
-  for (const request of [null, undefined, 'x', 7, [], [plan()], {}]) failed(save(server(database()), request), 'INVALID_REQUEST');
+  // Sent exactly as is: no session, or a session plus a claim about who is acting.
+  for (const request of [null, undefined, 'x', 7, [], [plan()], {}]) failed(plain(server(database()).get('saveVacation')(request)), 'INVALID_REQUEST');
+  const project = server(database());
+  for (const roommateId of [SAM, ALEX, '', 'x'.repeat(65)]) {
+    failed(plain(project.get('saveVacation')({ ...asSignedIn(project, plan()), roommate_id: roommateId })), 'INVALID_REQUEST');
+  }
+  assert.deepEqual(project.lock.events, []);
 });
 
 test('the limits are exact: today and 120 days are fine, 366 days ahead is fine', () => {
@@ -116,13 +122,13 @@ test('the limits are exact: today and 120 days are fine, 366 days ahead is fine'
   for (const request of ok) assert.equal(save(server(database()), request).ok, true, JSON.stringify(request));
 });
 
-test('unknown and inactive roommates are refused under the lock, without writing', () => {
+test('a session for an unknown or deactivated roommate is refused under the lock, without writing', () => {
   const rows = fixtureSheet('ROOMMATES');
   rows[2][rows[0].indexOf('active')] = false; // Sam
   for (const roommate_id of ['nobody-with-this-id', SAM]) {
     const spreadsheet = database([], { ROOMMATES: rows });
     const project = server(spreadsheet);
-    failed(save(project, plan({ roommate_id })), 'UNKNOWN_ROOMMATE');
+    failed(save(project, plan({ roommate_id })), 'UNAUTHENTICATED');
     assert.equal(vacations(spreadsheet).length, 0);
     assert.deepEqual(project.lock.events, ['lock', 'unlock']);
   }
@@ -203,13 +209,14 @@ test('a busy lock or a failed write records nothing, hides the cause, and releas
 test('the checks and the write happen while the lock is held', () => {
   const spreadsheet = database();
   const project = server(spreadsheet);
+  const request = asSignedIn(project, plan()); // prepared before the reads are counted
   for (const sheet of spreadsheet.sheets.values()) {
     const getDataRange = sheet.getDataRange.bind(sheet);
     const appendRow = sheet.appendRow.bind(sheet);
     sheet.getDataRange = () => (project.lock.events.push('read'), getDataRange());
     sheet.appendRow = (row) => (project.lock.events.push('write'), appendRow(row));
   }
-  assert.equal(save(project, plan()).ok, true);
+  assert.equal(plain(project.get('saveVacation')(request)).ok, true);
   assert.match(project.lock.events.join(' '), /^lock( read)+ write( read)* unlock$/);
 });
 
@@ -252,8 +259,9 @@ test('only your own, not-yet-started, not-yet-used vacation can be cancelled', (
   failed(cancel(project, { roommate_id: SAM, vacation_id: 'v-future' }), 'NOT_YOUR_VACATION');
   failed(cancel(project, { roommate_id: ALEX, vacation_id: 'v-started' }), 'VACATION_STARTED');
   failed(cancel(project, { roommate_id: ALEX, vacation_id: 'v-missing' }), 'VACATION_NOT_FOUND');
-  for (const request of [null, {}, { roommate_id: ALEX }, { vacation_id: 'v-future' }, { roommate_id: ALEX, vacation_id: 'bad id!' }, { roommate_id: ALEX, vacation_id: 'v-future', role: 'admin' }]) {
-    failed(cancel(project, request), 'INVALID_REQUEST');
+  const { token } = asSignedIn(project, { roommate_id: ALEX });
+  for (const request of [null, {}, { token }, { vacation_id: 'v-future' }, { token, vacation_id: 'bad id!' }, { token, vacation_id: 'v-future', role: 'admin' }, { token, vacation_id: 'v-future', roommate_id: ALEX }]) {
+    failed(plain(project.get('cancelVacation')(request)), 'INVALID_REQUEST');
   }
   assert.equal(spreadsheet.snapshot(), before, 'every refusal leaves the Sheet untouched');
 });
@@ -331,12 +339,33 @@ test('a vacation that is under way is "away" and cannot be cancelled', () => {
   assert.deepEqual(vacation.weekends.map((w) => w.due_at), ['2026-01-11T23:00:00.000Z'], 'only weekends still ahead are listed');
 });
 
+test('a vacation that ended in the last two weeks is "returned", with its past weekends; older ones are hidden', () => {
+  const early = new Date('2025-12-01T10:00:00Z');
+  const rows = [
+    // Back on Mon 5 Jan, two days before NOW: covered the weekends of 27-28 Dec and 3-4 Jan.
+    stored({ vacation_id: 'v-back', roommate_id: SAM, start_date: berlinMidnight(12, 24, 2025), return_date: berlinMidnight(1, 5), created_at: early }),
+    // Back exactly 14 days before NOW's Berlin day boundary is still listed; 15 days is not.
+    stored({ vacation_id: 'v-14', roommate_id: JO, start_date: berlinMidnight(12, 20, 2025), return_date: new Date(NOW.getTime() - 14 * 86400000 + 1), created_at: early }),
+    stored({ vacation_id: 'v-15', roommate_id: JO, start_date: berlinMidnight(12, 10, 2025), return_date: new Date(NOW.getTime() - 15 * 86400000), created_at: early }),
+  ];
+  const skip = { log_id: 'log-skip', rotation_id: ALEX_SLOT, roommate_id: SAM, due_date: berlinMidnight(1, 5), outcome: 'vacation_skipped', resolved_at: berlinMidnight(1, 5), notes: 'Skipped for vacation v-back', created_at: berlinMidnight(1, 5) };
+  const spreadsheet = database(rows, { CLEANING_LOGS: rowsFor('CLEANING_LOGS', [skip]) });
+  const result = list(server(spreadsheet));
+  assert.deepEqual(result.vacations.map((v) => v.vacation_id).sort(), ['v-14', 'v-back']);
+  const back = result.vacations.find((v) => v.vacation_id === 'v-back');
+  assert.deepEqual([back.state, back.cancellable], ['returned', false]);
+  assert.deepEqual(back.weekends.map((w) => [w.due_at, w.status]), [
+    ['2025-12-28T23:00:00.000Z', 'past'],
+    ['2026-01-04T23:00:00.000Z', 'skipped'],
+  ], 'a past weekend is only called skipped when a skip was recorded');
+});
+
 test('a recorded skip is shown as skipped, and the response holds names and dates only', () => {
   const spreadsheet = database();
   const project = server(spreadsheet);
   save(project, plan());
   schedule(project); // records the skip
-  const raw = project.get('listVacations')();
+  const raw = project.get('listVacations')(asSignedIn(project));
   const result = plain(raw);
   assert.deepEqual(Object.keys(result).sort(), ['ok', 'vacations']);
   for (const vacation of result.vacations) {
@@ -365,6 +394,9 @@ test('the environment and time zone safeguards apply to every vacation function'
     failed(save(project, plan()), code);
     failed(cancel(project, { roommate_id: ALEX, vacation_id: 'v1' }), code);
     failed(list(project), code);
+    const seen = { seen_start: '2026-01-19T23:00:00.000Z', seen_return: '2026-01-26T23:00:00.000Z' };
+    failed(call(project, 'updateVacation', { roommate_id: ALEX, vacation_id: 'v1', start_date: '2026-01-20', return_date: '2026-01-27', ...seen }), code);
+    failed(call(project, 'endVacation', { roommate_id: ALEX, vacation_id: 'v1', ...seen }), code);
     assert.equal(spreadsheet.snapshot(), before);
   }
 });

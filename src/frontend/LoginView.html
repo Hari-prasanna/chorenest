@@ -1,0 +1,84 @@
+<script>
+// Sign-in and first-password screens. Data in, HTML strings out; no DOM access and no server calls.
+// Messages come from fixed texts here, never from the server, so no internal detail can reach the screen.
+const PASSWORD_MIN_LENGTH = 10;
+const AUTH_MESSAGES = {
+  LOGIN_FAILED: 'That didn’t work. Check your username and password. After several failed attempts, wait 15 minutes.',
+  TEMP_PASSWORD_EXPIRED: 'That temporary password has expired. Ask the app owner for a new one.',
+  PASSWORD_CHANGE_FAILED: 'The temporary password isn’t right, or there were too many attempts. Wait 15 minutes and try again.',
+  PASSWORD_WEAK: 'Choose a password of at least 10 characters that isn’t easy to guess, and doesn’t contain your username.',
+  PASSWORD_REUSED: 'Choose a password different from the temporary one.',
+  BUSY: 'ChoreNest is busy right now. Try again in a moment.',
+  INVALID_REQUEST: 'Enter your username and password.',
+  UNAUTHENTICATED: 'Your session has ended. Please sign in again.',
+  SIGNED_OUT: 'You’re signed out.',
+  REQUEST_FAILED: 'Couldn’t reach ChoreNest. Check your connection and try again.',
+};
+const AUTH_FALLBACK = 'Something went wrong. Try again in a moment.';
+
+function authMessage(code) {
+  return Object.prototype.hasOwnProperty.call(AUTH_MESSAGES, code) ? AUTH_MESSAGES[code] : AUTH_FALLBACK;
+}
+
+function disabledIf(busy) {
+  return busy ? ' disabled' : '';
+}
+
+function renderPasswordInput(id, label, autocomplete, busy, extra) {
+  return '<div class="field"><label for="' + id + '">' + label + '</label><div class="password-field">' +
+    '<input class="text-input" id="' + id + '" type="password" autocomplete="' + autocomplete + '" maxlength="128" required' +
+    disabledIf(busy) + (extra || '') + '>' +
+    '<button class="password-toggle" type="button" data-action="toggle-password" data-target="' + id + '" aria-controls="' + id +
+    '" aria-pressed="false" aria-label="Show password"' + disabledIf(busy) + '>Show</button></div></div>';
+}
+
+/** While the server hashes (several seconds) the form is locked and says so; otherwise any problem is shown. */
+function renderAuthStatus(state, busyText) {
+  if (state.busy) {
+    return '<p class="auth-status" role="status"><span class="spinner" aria-hidden="true"></span>' + escapeHtml(busyText) + '</p>';
+  }
+  return state.message ? '<p class="form-error" role="alert">' + escapeHtml(state.message) + '</p>' : '';
+}
+
+/** state: { username, message, busy } */
+function renderSignIn(state) {
+  const view = state || {};
+  return '<section class="card auth-card" aria-labelledby="auth-title"' + (view.busy ? ' aria-busy="true"' : '') + '>' +
+    '<div class="auth-head"><span class="auth-icon" aria-hidden="true">🏡</span><h2 id="auth-title">Welcome home</h2>' +
+    '<p>Sign in to see whose turn it is.</p></div>' +
+    '<form class="auth-form" data-form="sign-in" novalidate>' +
+    '<div class="field"><label for="sign-in-username">Username</label>' +
+    '<input class="text-input" id="sign-in-username" type="text" autocomplete="username" autocapitalize="none" autocorrect="off" ' +
+    'spellcheck="false" maxlength="32" required value="' + escapeHtml(view.username || '') + '"' + disabledIf(view.busy) + '></div>' +
+    renderPasswordInput('sign-in-password', 'Password', 'current-password', view.busy) +
+    renderAuthStatus(view, 'Checking your password. This takes a few seconds…') +
+    '<button class="button auth-submit" type="submit"' + disabledIf(view.busy) + '>' + (view.busy ? 'Signing in…' : 'Sign in') + '</button></form>' +
+    '<p class="auth-help">Forgot your password? Ask the app owner for a new temporary one.</p></section>';
+}
+
+/** state: { name, message, busy }. Shown after signing in with a temporary password, before anything else. */
+function renderPasswordChange(state) {
+  const view = state || {};
+  return '<section class="card auth-card" aria-labelledby="auth-title"' + (view.busy ? ' aria-busy="true"' : '') + '>' +
+    '<div class="auth-head"><span class="auth-icon" aria-hidden="true">🔑</span><h2 id="auth-title">Choose your own password</h2>' +
+    '<p>' + (view.name ? 'Hi ' + escapeHtml(view.name) + '! ' : '') +
+    'You signed in with a temporary password. Pick a new one that only you know.</p></div>' +
+    '<form class="auth-form" data-form="change-password" novalidate>' +
+    renderPasswordInput('current-password', 'Temporary password', 'current-password', view.busy) +
+    renderPasswordInput('new-password', 'New password', 'new-password', view.busy, ' aria-describedby="password-hint"') +
+    '<p class="field-hint" id="password-hint">At least ' + PASSWORD_MIN_LENGTH + ' characters. A short sentence is easy to remember.</p>' +
+    renderPasswordInput('repeat-password', 'Repeat new password', 'new-password', view.busy) +
+    renderAuthStatus(view, 'Saving your new password. This takes about 10 seconds…') +
+    '<button class="button auth-submit" type="submit"' + disabledIf(view.busy) + '>' + (view.busy ? 'Saving…' : 'Save password') + '</button></form>' +
+    '<p class="auth-help"><button class="link-button" type="button" data-action="sign-out"' + disabledIf(view.busy) + '>Sign out</button></p></section>';
+}
+
+/** The first problem the page can see before asking the server, or ''. The server checks everything again. */
+function passwordChangeProblem(current, next, repeat) {
+  if (!current || !next || !repeat) return 'Fill in all three fields.';
+  if (Array.from(next).length < PASSWORD_MIN_LENGTH) return 'The new password needs at least ' + PASSWORD_MIN_LENGTH + ' characters.';
+  if (next !== repeat) return 'The two new passwords don’t match.';
+  if (next === current) return AUTH_MESSAGES.PASSWORD_REUSED;
+  return '';
+}
+</script>

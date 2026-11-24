@@ -12,6 +12,7 @@ const {
   loadProject,
   plain,
 } = require('./support/appsScript');
+const { asSignedIn } = require('./support/appsScript');
 
 const ALEX = FIXTURES.ROOMMATES[0].roommate_id;
 const SAM = FIXTURES.ROOMMATES[1].roommate_id;
@@ -36,8 +37,8 @@ function server(spreadsheet, { now = NOW, environment = 'DEV', spreadsheetId = D
   return loadProject({ properties: { ENVIRONMENT: environment, SPREADSHEET_ID: spreadsheetId }, spreadsheets: [spreadsheet], now, ...options });
 }
 
-const schedule = (project) => plain(project.get('getRotationSchedule')());
-const mark = (project, request) => plain(project.get('markCleaned')(request));
+const schedule = (project) => plain(project.get('getRotationSchedule')(asSignedIn(project)));
+const mark = (project, request) => plain(project.get('markCleaned')(asSignedIn(project, request)));
 
 /** The request the page would send for the current turn, as shown by getRotationSchedule(). */
 function claimFor(project, overrides = {}) {
@@ -77,7 +78,7 @@ test('records the actual time, the turn\'s own due date and the outcome, then th
   assert.equal(row.outcome, 'completed');
   assert.equal(row.completed_at.getTime(), NOW.getTime());
   assert.equal(row.resolved_at.getTime(), NOW.getTime());
-  assert.match(row.notes, /unverified/);
+  assert.match(row.notes, /signed-in roommate/);
   assert.equal(Object.prototype.toString.call(row.created_at), '[object Date]');
   assert.equal(JSON.stringify(['ROOMMATES', 'ROTATION', 'SWAPS', 'VACATIONS'].map((n) => spreadsheet.getSheetByName(n).values)), others);
 
@@ -102,18 +103,18 @@ test('an overdue turn can still be completed, and the next turn is due on the ne
 
 // Who may complete
 
-test('only the current assignee can complete, whatever the claim says', () => {
+test('only the signed-in current assignee can complete; other roommates and non-roommates cannot', () => {
   const spreadsheet = database();
   const project = server(spreadsheet);
   const before = spreadsheet.snapshot();
-  const claims = [
-    { roommate_id: SAM },
-    { roommate_id: FIXTURES.ROOMMATES[2].roommate_id },
-    { roommate_id: 'admin' },
-    { roommate_id: 'not-a-roommate' },
-  ];
-  for (const claim of claims) {
-    failedWith(mark(project, claimFor(project, claim)), 'NOT_YOUR_TURN');
+  // Signed in as someone else: a real session, but not this turn.
+  for (const roommateId of [SAM, FIXTURES.ROOMMATES[2].roommate_id]) {
+    failedWith(mark(project, claimFor(project, { roommate_id: roommateId })), 'NOT_YOUR_TURN');
+    assert.equal(spreadsheet.snapshot(), before);
+  }
+  // No account behind the token at all.
+  for (const roommateId of ['admin', 'not-a-roommate']) {
+    failedWith(mark(project, claimFor(project, { roommate_id: roommateId })), 'UNAUTHENTICATED');
     assert.equal(spreadsheet.snapshot(), before);
   }
   assert.equal(project.lock.held, false);
@@ -122,16 +123,17 @@ test('only the current assignee can complete, whatever the claim says', () => {
 test('there is no way to claim extra rights: unknown fields and malformed requests are rejected before anything runs', () => {
   const spreadsheet = database();
   const project = server(spreadsheet);
-  const good = claimFor(project);
+  // Exactly what the signed-in page sends; every variation below is sent as is.
+  const good = asSignedIn(project, claimFor(project));
   const before = spreadsheet.snapshot();
   const bad = [
     undefined, null, 'x', 7, [], {}, [good],
     { ...good, role: 'admin' }, { ...good, is_admin: true }, { ...good, outcome: 'admin_resolved' }, { ...good, notes: 'x' },
-    { ...good, roommate_id: '' }, { ...good, roommate_id: 5 }, { ...good, rotation_id: null }, { ...good, due_at: 'someday' },
-    { ...good, due_at: 12345 }, { ...good, roommate_id: 'x'.repeat(101) },
-    { roommate_id: good.roommate_id, rotation_id: good.rotation_id },
+    { ...good, roommate_id: SAM }, { ...good, roommate_id: good.roommate_id }, { ...good, token: 5 }, { ...good, token: undefined },
+    { ...good, rotation_id: null }, { ...good, due_at: 'someday' }, { ...good, due_at: 12345 },
+    { token: good.token, rotation_id: good.rotation_id },
   ];
-  for (const request of bad) failedWith(mark(project, request), 'INVALID_REQUEST');
+  for (const request of bad) failedWith(plain(project.get('markCleaned')(request)), 'INVALID_REQUEST');
   assert.equal(spreadsheet.snapshot(), before);
   assert.deepEqual(project.lock.events, [], 'invalid requests never take the lock');
 });
@@ -320,14 +322,15 @@ test('two saves racing for the same turn: one wins, the other waits out and sees
 test('the turn is read and checked while the lock is held', () => {
   const spreadsheet = database();
   const project = server(spreadsheet);
+  const request = asSignedIn(project, claimFor(server(database()))); // what the page sends, prepared beforehand
   for (const sheet of spreadsheet.sheets.values()) {
     const getDataRange = sheet.getDataRange.bind(sheet);
     const appendRow = sheet.appendRow.bind(sheet);
     sheet.getDataRange = () => (project.lock.events.push('read'), getDataRange());
     sheet.appendRow = (row) => (project.lock.events.push('write'), appendRow(row));
   }
-  const request = claimFor(server(database()));
-  assert.equal(mark(project, request).ok, true);
+  assert.equal(plain(project.get('markCleaned')(request)).ok, true);
+  // The session, the turn and the write all happen inside the lock.
   assert.match(project.lock.events.join(' '), /^lock( read)+ write unlock$/);
 });
 
@@ -354,7 +357,7 @@ test('the environment and time zone safeguards still apply to writes', () => {
 
 test('the response is browser-safe JSON with nothing but the outcome', () => {
   const project = server(database());
-  const raw = project.get('markCleaned')(claimFor(project));
+  const raw = project.get('markCleaned')(asSignedIn(project, claimFor(project)));
   assert.deepEqual(JSON.parse(JSON.stringify(raw)), plain(raw));
   assert.deepEqual(Object.keys(raw).sort(), ['completed_at', 'ok']);
   const failure = project.get('markCleaned')(null);

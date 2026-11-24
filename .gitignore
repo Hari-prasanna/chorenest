@@ -3,11 +3,12 @@ e2e/results/
 playwright-report/
 npm-debug.log*
 
-# clasp project configs and credentials (contain script IDs and tokens)
 .clasp.json
 .clasp.dev.json
 .clasp.prod.json
 .clasprc.json
+.clasp-auth/
+*.clasprc.json
 
 .env*
 .DS_Store

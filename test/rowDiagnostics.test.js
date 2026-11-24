@@ -5,6 +5,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { DEV_SPREADSHEET_ID, FIXTURES, FakeSpreadsheet, fixtureRecords, fixtureSheet, loadProject, plain } = require('./support/appsScript');
+const { asSignedIn } = require('./support/appsScript');
 
 const ALEX = FIXTURES.ROOMMATES[0].roommate_id;
 const ALEX_SLOT = FIXTURES.ROTATION[0].rotation_id;
@@ -38,7 +39,10 @@ function database({ logs, swaps, rotation, sheets = {} } = {}) {
 
 const project = (spreadsheet) => loadProject({ properties: { ENVIRONMENT: 'DEV', SPREADSHEET_ID: DEV_SPREADSHEET_ID }, spreadsheets: [spreadsheet], now: NOW });
 const diagnose = (spreadsheet) => plain(project(spreadsheet).get('diagnoseDatabase_')());
-const scheduleOk = (spreadsheet) => plain(project(spreadsheet).get('getRotationSchedule')()).ok;
+const scheduleOk = (spreadsheet) => {
+  const app = project(spreadsheet);
+  return plain(app.get('getRotationSchedule')(asSignedIn(app))).ok;
+};
 
 // Rows that make the engine throw, and rows that are wrong but harmless to the schedule.
 const BAD_LOGS = {

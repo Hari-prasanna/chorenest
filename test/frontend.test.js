@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
-const { DEV_SPREADSHEET_ID, FIXTURES, FakeSpreadsheet, fixtureSheet, loadProject, plain } = require('./support/appsScript');
+const { DEV_SPREADSHEET_ID, FIXTURES, FakeSpreadsheet, asSignedIn, fixtureSheet, loadProject, plain } = require('./support/appsScript');
 
 const FRONTEND_DIR = path.join(__dirname, '..', 'src', 'frontend');
 const read = (file) => fs.readFileSync(path.join(FRONTEND_DIR, file), 'utf8');
@@ -15,7 +15,19 @@ const scriptOf = (file) => read(file).match(/<script>([\s\S]*)<\/script>/)[1];
  * Runs the real page scripts against a fake browser: document, theme toggle, localStorage, matchMedia and
  * google.script.run. `storage` can be shared between two loads to simulate a page reload.
  */
-function loadFrontend({ storage = new Map(), systemDark = false, storageBlocked = false } = {}) {
+const SESSION_KEY = 'chorenest-session';
+const FAR_FUTURE = '2099-01-01T00:00:00.000Z';
+/** The signed-in roommate as the server reports it (Hari holds the ADMIN role in these tests). */
+const viewerOf = (name, extra = {}) => ({ roommate_id: `id-${name}`, name, role: name === 'Hari' ? 'ADMIN' : 'ROOMMATE', must_change_password: false, ...extra });
+
+/**
+ * Loads the real page scripts with a fake DOM. `as` signs the page in as that roommate: a stored session, and the
+ * fake server adds them as `viewer` to good schedule answers. The default is Jijo, who is not the current assignee;
+ * `as: null` starts signed out.
+ */
+function loadFrontend({ storage = new Map(), systemDark = false, storageBlocked = false, as = 'Jijo' } = {}) {
+  if (as && !storageBlocked && !storage.has(SESSION_KEY)) storage.set(SESSION_KEY, JSON.stringify({ token: `token-${as}`, expires_at: FAR_FUTURE }));
+  let viewer = as ? viewerOf(as) : null;
   const element = () => ({
     innerHTML: '',
     attributes: {},
@@ -70,7 +82,16 @@ function loadFrontend({ storage = new Map(), systemDark = false, storageBlocked 
   };
   const profileButton = element();
   const betaNotice = Object.assign(element(), { hidden: true });
-  const whoSelect = Object.assign(element(), { focused: 0, focus() { this.focused++; } });
+  const authScreen = Object.assign(element(), { hidden: false });
+  const mainContent = Object.assign(element(), { hidden: true });
+  const input = (type = 'text') => Object.assign(element(), { value: '', type, focused: 0, focus() { this.focused++; } });
+  const authInputs = {
+    'sign-in-username': input(),
+    'sign-in-password': input('password'),
+    'current-password': input('password'),
+    'new-password': input('password'),
+    'repeat-password': input('password'),
+  };
   const tabs = element();
   const tabButtons = ['schedule', 'vacation', 'swaps', 'history'].map((name) => {
     const button = element();
@@ -85,6 +106,7 @@ function loadFrontend({ storage = new Map(), systemDark = false, storageBlocked 
     swaps: Object.assign(element(), { hidden: true }),
     history: Object.assign(element(), { hidden: true }),
   };
+  const awaySlot = element();
   const startInput = Object.assign(element(), { value: '' });
   const returnInput = Object.assign(element(), { value: '' });
 
@@ -122,31 +144,18 @@ function loadFrontend({ storage = new Map(), systemDark = false, storageBlocked 
       this.failure = failure;
       return this;
     },
-    getRotationSchedule(...args) {
-      calls.push('getRotationSchedule');
-      callArguments.push(args);
-      pending.push({ success: this.success, failure: this.failure });
-    },
-    markCleaned(...args) {
-      calls.push('markCleaned');
-      callArguments.push(args);
-      pending.push({ success: this.success, failure: this.failure });
-    },
-    listVacations(...args) {
-      calls.push('listVacations');
-      callArguments.push(args);
-      pending.push({ success: this.success, failure: this.failure });
-    },
-    saveVacation(...args) {
-      calls.push('saveVacation');
-      callArguments.push(args);
-      pending.push({ success: this.success, failure: this.failure });
-    },
-    cancelVacation(...args) {
-      calls.push('cancelVacation');
-      callArguments.push(args);
-      pending.push({ success: this.success, failure: this.failure });
-    },
+  };
+  for (const name of ['getRotationSchedule', 'markCleaned', 'listVacations', 'saveVacation', 'cancelVacation', 'updateVacation', 'endVacation', 'signIn', 'changePassword', 'signOut']) {
+    run[name] = function (...args) {
+      calls.push(name);
+      callArguments.push(JSON.parse(JSON.stringify(args))); // plain data, as google.script.run would send it
+      pending.push({ name, success: this.success, failure: this.failure });
+    };
+  }
+  // Like the server: a good schedule says who is signed in; a successful sign-in changes who that is.
+  const answer = (entry, result) => {
+    if ((entry.name === 'signIn' || entry.name === 'changePassword') && result && result.ok === true) viewer = result.viewer;
+    entry.success(entry.name === 'getRotationSchedule' && result && result.ok === true && !result.viewer && viewer ? { ...result, viewer } : result);
   };
   const elements = {
     'theme-toggle': toggle,
@@ -157,7 +166,9 @@ function loadFrontend({ storage = new Map(), systemDark = false, storageBlocked 
     'profile-dialog': profileDialog,
     'profile-button': profileButton,
     'beta-notice': betaNotice,
-    'who-select': whoSelect,
+    'auth-screen': authScreen,
+    'main-content': mainContent,
+    ...authInputs,
     tabs,
     'panel-schedule': panels.schedule,
     'panel-vacation': panels.vacation,
@@ -165,6 +176,7 @@ function loadFrontend({ storage = new Map(), systemDark = false, storageBlocked 
     'panel-history': panels.history,
     'vacation-start': startInput,
     'vacation-return': returnInput,
+    'away-slot': awaySlot,
   };
   const document = { documentElement: root, getElementById: (id) => elements[id] || app };
   const context = vm.createContext({
@@ -177,12 +189,14 @@ function loadFrontend({ storage = new Map(), systemDark = false, storageBlocked 
   const themeAtLoad = root.attributes['data-theme'];
   vm.runInContext(scriptOf('ScheduleView.html'), context);
   vm.runInContext(scriptOf('VacationView.html'), context);
-  vm.runInContext(scriptOf('Identity.html'), context);
+  vm.runInContext(scriptOf('Session.html'), context);
+  vm.runInContext(scriptOf('LoginView.html'), context);
   vm.runInContext(scriptOf('Shell.html'), context);
   vm.runInContext(scriptOf('App.html'), context);
 
   return {
     app,
+    awaySlot,
     whoText,
     markAction,
     dialog,
@@ -190,7 +204,12 @@ function loadFrontend({ storage = new Map(), systemDark = false, storageBlocked 
     profileDialog,
     profileButton,
     betaNotice,
-    whoSelect,
+    authScreen,
+    mainContent,
+    authInputs,
+    authSubmit: (form) => authScreen.listeners.submit({ target: { getAttribute: (name) => (name === 'data-form' ? form : null) }, preventDefault() {} }),
+    authClick: (action, attributes = {}) => authScreen.listeners.click({ target: { getAttribute: (name) => (name === 'data-action' ? action : attributes[name] || null) } }),
+    signedIn: () => !mainContent.hidden && !tabs.hidden && authScreen.hidden,
     panels,
     tabButtons,
     tabs,
@@ -207,7 +226,9 @@ function loadFrontend({ storage = new Map(), systemDark = false, storageBlocked 
     },
     vacationClick: (action, attributes = {}) =>
       vacationDialog.listeners.click({ target: { getAttribute: (name) => (name === 'data-action' ? action : attributes[name] || null) } }),
-    openVacationsClick: () => panels.vacation.listeners.click({ target: { getAttribute: (name) => (name === 'data-action' ? 'open-vacations' : null) } }),
+    panelClick: (action, attributes = {}) =>
+      panels.vacation.listeners.click({ target: { getAttribute: (name) => (name === 'data-action' ? action : attributes[name] || null) } }),
+    clickApp: (action) => app.listeners.click({ target: { getAttribute: (name) => (name === 'data-action' ? action : null) } }),
     clickMark: () => app.listeners.click({ target: { getAttribute: (name) => (name === 'data-action' ? 'mark-cleaned' : null) } }),
     dialogClick: (action) => dialog.listeners.click({ target: { getAttribute: (name) => (name === 'data-action' ? action : null) } }),
     calls,
@@ -223,13 +244,10 @@ function loadFrontend({ storage = new Map(), systemDark = false, storageBlocked 
       media.listener();
     },
     view: (name) => vm.runInContext(name, context),
-    succeed: (result) => pending[pending.length - 1].success(result),
-    succeedCall: (index, result) => pending[index].success(result),
+    succeed: (result) => answer(pending[pending.length - 1], result),
+    succeedCall: (index, result) => answer(pending[index], result),
     failCall: (index) => pending[index].failure(new Error('network')),
     fail: (error = new Error('network')) => pending[pending.length - 1].failure(error),
-    pick: (roommateId) =>
-      app.listeners.change({ target: { value: roommateId, getAttribute: (name) => (name === 'data-action' ? 'select-roommate' : null) } }),
-    changeElsewhere: () => app.listeners.change({ target: { value: 'x', getAttribute: () => null } }),
     clickRetry: () => app.listeners.click({ target: { getAttribute: (name) => (name === 'data-action' ? 'retry' : null) } }),
     clickElsewhere: () => app.listeners.click({ target: { getAttribute: () => null } }),
   };
@@ -256,8 +274,9 @@ function turn(name, weekend = 0, extra = {}) {
   };
 }
 
-function schedule({ current = {}, upcoming, roommates } = {}) {
+function schedule({ current = {}, upcoming, roommates, viewer } = {}) {
   return {
+    ...(viewer ? { viewer } : {}),
     ok: true,
     environment: 'DEV',
     generated_at: '2026-01-13T12:00:00.000Z',
@@ -267,6 +286,8 @@ function schedule({ current = {}, upcoming, roommates } = {}) {
   };
 }
 
+// After the first schedule answer the page asks for the household vacations once.
+const LOADED = ['getRotationSchedule', 'listVacations'];
 const failure = (code) => ({ ok: false, error: { code, message: 'Server detail that visitors must not see' } });
 
 // Loading and success
@@ -296,12 +317,34 @@ test('shows the current cleaner, task, weekend, due date and status', () => {
   assert.doesNotMatch(html, /is-overdue/);
 });
 
-test('shows the next three turns in order, with their weekends', () => {
+/** The names listed under "Coming up", in order. */
+const comingUpNames = (html) => [...html.matchAll(/<li class="timeline-item">[\s\S]*?class="name">([^<]*)</g)].map((m) => m[1]);
+
+test('Coming up shows the next three distinct turns; the same roommate may come round again on a later weekend', () => {
   const page = loadFrontend();
   page.succeed(schedule());
   const items = page.app.innerHTML.match(/<li class="timeline-item">[\s\S]*?<\/li>/g).map(textOf);
-  assert.deepEqual(items, ['Jijo Up next Sat 24 – Sun 25 Jan', 'Arun Then Sat 31 Jan – Sun 1 Feb', 'Hari After that Sat 7 – Sun 8 Feb']);
+  assert.deepEqual(items, ['Jijo Up next Sat 24 – Sun 25 Jan', 'Arun Then Sat 31 Jan – Sun 1 Feb', 'Hari After that Sat 7 – Sun 8 Feb'], 'Hari cleans now and again in three weeks');
   assert.deepEqual([...page.app.innerHTML.matchAll(/class="avatar avatar-\w+ tone-\d" aria-hidden="true">([^<]*)</g)].map((m) => m[1]), ['H', 'J', 'A', 'H']);
+  assert.equal((textOf(page.app.innerHTML).match(/Sat 17 – Sun 18 Jan/g) || []).length, 1, 'the current weekend appears once, in the card');
+  assert.doesNotMatch(textOf(page.app.innerHTML), /Your next turn|your turn at a glance/);
+
+  const four = loadFrontend();
+  four.succeed(schedule({ upcoming: [turn('Jijo', 1), turn('Arun', 2), turn('Kim', 3), turn('Hari', 4)], roommates: [person('Arun'), person('Hari'), person('Jijo'), person('Kim')] }));
+  assert.deepEqual(comingUpNames(four.app.innerHTML), ['Jijo', 'Arun', 'Kim'], 'at most three');
+});
+
+test('only the exact current assignment is left out, and each weekend is listed once', () => {
+  const current = { ...turn('Hari', 0), status: 'overdue' };
+  const page = loadFrontend();
+  page.succeed(schedule({ current, upcoming: [turn('Hari', 0), turn('Arun', -1), turn('Jijo', 1), turn('Jijo', 1), turn('Hari', 2)] }));
+  const html = page.app.innerHTML;
+  assert.deepEqual(comingUpNames(html), ['Jijo', 'Hari']);
+  assert.equal((textOf(html).match(/Sat 17 – Sun 18 Jan/g) || []).length, 1, 'the current weekend appears once, in the card');
+
+  const alone = loadFrontend();
+  alone.succeed(schedule({ upcoming: [turn('Hari', 1), turn('Hari', 2), turn('Hari', 3)], roommates: [person('Hari')] }));
+  assert.deepEqual(comingUpNames(alone.app.innerHTML), ['Hari', 'Hari', 'Hari'], 'a single roommate still has later weekends');
 });
 
 test('marks an overdue turn, and labels one that has not opened yet', () => {
@@ -320,18 +363,19 @@ test('marks an overdue turn, and labels one that has not opened yet', () => {
   assert.match(textOf(waiting.app.innerHTML), /Not open yet\./);
 });
 
-test('explains swapped turns, roommates who are away and recorded vacations', () => {
+test('explains swapped turns and roommates who are away, in one short note each', () => {
   const page = loadFrontend();
   page.succeed(
     schedule({
-      current: { owner: person('Jijo'), assignee: person('Hari'), swap_id: 'swap', vacation_conflict_id: 'vacation' },
+      current: { owner: person('Jijo'), assignee: person('Hari'), swap_id: 'swap', vacation_conflict_id: 'vacation', skipped: [person('Kim')] },
       upcoming: [turn('Arun', 1, { skipped: [person('Jijo'), person('Kim')] }), turn('Hari', 2), turn('Jijo', 3)],
     })
   );
-  const text = textOf(page.app.innerHTML);
-  assert.match(text, /Swapped turn: covering for Jijo\./);
-  assert.match(text, /A vacation has been recorded for this weekend\./);
-  assert.match(text, /Jijo and Kim are away\./);
+  const hero = textOf(page.app.innerHTML.match(/<section class="card hero[\s\S]*?<\/section>/)[0]);
+  assert.match(hero, /Covering for Jijo \(swap\)\. Hari is away, so this turn will be skipped\./);
+  assert.equal((page.app.innerHTML.match(/<p class="note">/g) || []).length, 3, 'two in the card, one in Coming up');
+  assert.match(textOf(page.app.innerHTML), /Jijo and Kim are away\./);
+  assert.doesNotMatch(textOf(page.app.innerHTML), /has been recorded/);
 });
 
 // Berlin time
@@ -380,15 +424,14 @@ test('shows a placeholder for a roommate without a name', () => {
   assert.match(page.app.innerHTML, /class="avatar avatar-lg tone-\d" aria-hidden="true">U</);
 });
 
-test('is read-only: only the roommate picker as a control, and only getRotationSchedule is ever called', () => {
-  const page = loadFrontend();
+test('is read-only: no picker or form on the schedule, and only the two read calls are made', () => {
+  const page = loadFrontend(); // Jijo, whose turn it is not
   page.succeed(schedule());
-  assert.doesNotMatch(page.app.innerHTML, /<(form|input|textarea|a )/);
-  assert.equal(page.app.innerHTML.match(/<select/g).length, 1);
-  assert.doesNotMatch(page.app.innerHTML, /<button/, 'the schedule has no buttons for a visitor who picked nobody');
-  assert.deepEqual(page.panels.vacation.innerHTML.match(/<button[^>]*>/g), ['<button class="button button-quiet" type="button" data-action="open-vacations">'], 'the only button is the one that opens vacations');
+  assert.doesNotMatch(page.app.innerHTML, /<(form|input|textarea|select|a )/);
+  assert.equal(page.app.innerHTML.match(/<button[^>]*>/g), null, 'someone else’s turn offers no action');
+  assert.deepEqual(page.panels.vacation.innerHTML.match(/<button[^>]*>/g), ['<button class="button" type="button" data-action="plan-vacation">'], 'planning your own vacation is always possible');
   page.clickElsewhere();
-  assert.deepEqual(page.calls, ['getRotationSchedule']);
+  assert.deepEqual(page.calls, LOADED);
 });
 
 // Empty and error states
@@ -433,7 +476,7 @@ test('a failed request shows an error with retry, and retrying loads the schedul
   assert.equal(page.app.attributes['aria-busy'], 'false');
 
   page.clickRetry();
-  assert.deepEqual(page.calls, ['getRotationSchedule', 'getRotationSchedule']);
+  assert.deepEqual(page.calls, ['getRotationSchedule', 'listVacations', 'getRotationSchedule'], 'vacations are still loaded for their tab');
   assert.match(page.app.innerHTML, /Loading schedule/);
   assert.equal(page.app.attributes['aria-busy'], 'true');
 
@@ -478,15 +521,59 @@ test('renders the real getRotationSchedule() response built from the fixtures', 
   });
 
   const page = loadFrontend();
-  page.succeed(plain(server.get('getRotationSchedule')()));
+  page.succeed(plain(server.get('getRotationSchedule')(asSignedIn(server))));
   const text = textOf(page.app.innerHTML);
   assert.match(text, /Current turn Pending Alex Example Entire Home/);
-  assert.match(text, /Swapped turn: covering for Sam Example\./);
+  assert.match(text, /Covering for Sam Example \(swap\)\./);
   assert.match(text, /Cleaning weekend Sat 17 – Sun 18 Jan/);
   assert.match(text, /Updated Tue 13 Jan, 13:00 · Times in Berlin/);
   const upcoming = page.app.innerHTML.match(/<li class="timeline-item">[\s\S]*?<\/li>/g).map((item) => item.match(/class="name">([^<]*)</)[1]);
-  assert.deepEqual(upcoming, ['Kim Example', 'Alex Example', 'Sam Example']);
+  assert.deepEqual(upcoming, ['Kim Example', 'Alex Example', 'Sam Example'], 'three later turns; Alex comes round again');
   assert.match(text, /Jo Example is away\./);
+});
+
+test('with the real server and a 3-roommate rotation, Coming up shows three distinct weekends, with vacations and the clock change', () => {
+  const rotationRows = fixtureSheet('ROTATION').filter((row, i) => i === 0 || i <= 3); // header and positions 1-3
+  const roommateRows = fixtureSheet('ROOMMATES').filter((row, i) => i <= 3);
+  const noRows = (name) => [fixtureSheet(name)[0]];
+  const headers = fixtureSheet('VACATIONS')[0];
+  const vacation = (record) => headers.map((header) => (header in record ? record[header] : ''));
+  const ids = FIXTURES.ROOMMATES.map((r) => r.roommate_id);
+  const sheets = (extra = {}) => ({ ROOMMATES: roommateRows, ROTATION: rotationRows, CLEANING_LOGS: noRows('CLEANING_LOGS'), SWAPS: noRows('SWAPS'), VACATIONS: noRows('VACATIONS'), ...extra });
+  const render = (now, extra) => {
+    const server = loadProject({
+      properties: { ENVIRONMENT: 'DEV', SPREADSHEET_ID: DEV_SPREADSHEET_ID },
+      spreadsheets: [new FakeSpreadsheet(DEV_SPREADSHEET_ID, { marker: 'DEV', sheets: sheets(extra) })],
+      now: new Date(now),
+    });
+    const result = plain(server.get('getRotationSchedule')(asSignedIn(server)));
+    const page = loadFrontend();
+    page.succeed(result);
+    const weekends = [...page.app.innerHTML.matchAll(/<p class="when">([^<]*)<\/p>/g)].map((m) => m[1]);
+    return { result, html: page.app.innerHTML, names: comingUpNames(page.app.innerHTML), weekends };
+  };
+
+  // Plain rotation: Alex now, then Sam, Jo, Alex again: three distinct weekends, Alex in the card and again later in the list.
+  const plain3 = render('2026-01-13T12:00:00Z');
+  assert.equal(plain3.result.ok, true);
+  assert.equal(plain3.result.current.assignee.name, 'Alex Example');
+  assert.deepEqual(plain3.names, ['Sam Example', 'Jo Example', 'Alex Example']);
+  assert.equal(new Set(plain3.weekends).size, 3);
+  assert.doesNotMatch(textOf(plain3.html), /Your next turn|at a glance/);
+
+  // A vacation known in advance: Sam is skipped on his weekend, so Jo and Alex follow; still three distinct weekends.
+  const known = vacation({ vacation_id: 'v1', roommate_id: ids[1], start_date: new Date('2026-01-14T23:00:00Z'), return_date: new Date('2026-01-18T23:00:00Z'), created_at: new Date('2026-01-01T10:00:00Z') });
+  const withVacation = render('2026-01-13T12:00:00Z', { VACATIONS: [headers, known] });
+  assert.equal(withVacation.names.length, 3);
+  assert.equal(new Set(withVacation.weekends).size, 3);
+  assert.equal(withVacation.names[0], 'Jo Example', 'Sam is skipped');
+  assert.match(textOf(withVacation.html), /Sam Example is away\./);
+
+  // Across the October clock change the weekends stay one per week and start on a Saturday in Berlin.
+  const autumn = render('2026-10-14T12:00:00Z');
+  assert.equal(autumn.names.length, 3);
+  assert.equal(new Set(autumn.weekends).size, 3);
+  for (const weekend of autumn.weekends) assert.match(weekend, /^Sat /);
 });
 
 // Static checks
@@ -499,7 +586,8 @@ test('the page includes only frontend files that exist', () => {
     'frontend/Theme',
     'frontend/ScheduleView',
     'frontend/VacationView',
-    'frontend/Identity',
+    'frontend/Session',
+    'frontend/LoginView',
     'frontend/Shell',
     'frontend/App',
   ]);
@@ -521,7 +609,7 @@ test('no roommate names or dates are hardcoded in the frontend', () => {
 // Theme
 
 test('the theme starts as System and is applied before the page renders', () => {
-  const light = loadFrontend();
+  const light = loadFrontend({ as: null });
   assert.equal(light.themeAtLoad, 'light');
   assert.deepEqual(light.pressed(), { light: 'false', dark: 'false', system: 'true' });
   assert.equal(light.storage.size, 0);
@@ -616,15 +704,17 @@ test('each roommate keeps one avatar colour, from a fixed set', () => {
   assert.ok(tones.size >= 5, `only ${tones.size} tones used`);
 
   page.succeed(schedule());
-  const shown = [...page.app.innerHTML.matchAll(/avatar avatar-\w+ tone-(\d)/g)].map((m) => m[1]);
-  assert.equal(shown[0], shown[3], 'Hari has the same colour in the hero and in the list');
+  const inHero = page.app.innerHTML.match(/avatar avatar-lg tone-(\d)/)[1];
+  const later = loadFrontend();
+  later.succeed(schedule({ current: { ...turn('Jijo', 0), status: 'pending' }, upcoming: [turn('Hari', 1)] }));
+  assert.equal(later.app.innerHTML.match(/avatar avatar-md tone-(\d)" aria-hidden="true">H/)[1], inHero, 'Hari has the same colour in the card and in the list');
 });
 
 test('the hero never hides overdue or vacation information', () => {
   const page = loadFrontend();
   page.succeed(
     schedule({
-      current: { status: 'overdue', vacation_conflict_id: 'v', skipped: [person('Jijo')] },
+      current: { status: 'overdue', vacation_conflict_id: 'v' },
       upcoming: [turn('Arun', 1, { skipped: [person('Kim')] })],
     })
   );
@@ -633,9 +723,12 @@ test('the hero never hides overdue or vacation information', () => {
   assert.match(hero, /is-overdue/);
   assert.match(text, /Overdue/);
   assert.match(text, /Was due End of Sunday 18 Jan 2026/);
-  assert.match(text, /Jijo is away\./);
-  assert.match(text, /A vacation has been recorded for this weekend\./);
+  assert.match(text, /Hari is away, so this turn will be skipped\./);
   assert.match(textOf(page.app.innerHTML), /Kim is away\./);
+
+  const away = loadFrontend();
+  away.succeed(schedule({ current: { skipped: [person('Jijo')] } }));
+  assert.match(textOf(away.app.innerHTML), /Jijo is away\./);
 });
 
 test('statuses use a shape as well as a colour', () => {
@@ -663,15 +756,18 @@ test('the only buttons are the known ones, and the only navigation is the four-s
     for (const [button] of source.matchAll(/<button\b[^>]*>/g)) {
       assert.match(
         button,
-        /data-choice="|data-tab="(schedule|vacation|swaps|history)"|data-action="(open-profile|dismiss-beta|change-name|close-profile|retry|mark-cleaned|confirm-clean|cancel-clean|open-vacations|retry-vacations|plan-vacation|save-vacation|back-to-vacations|close-vacation|cancel-vacation|confirm-cancel-vacation)"/,
+        /data-choice="|data-tab="(schedule|vacation|swaps|history)"|id="profile-button"|class="button auth-submit" type="submit"|data-action="(dismiss-beta|close-profile|sign-out|toggle-password|retry|mark-cleaned|confirm-clean|cancel-clean|retry-vacations|plan-vacation|save-vacation|close-vacation|cancel-vacation|confirm-cancel-vacation|edit-vacation|end-vacation|save-edit|confirm-end-vacation)"/,
         `${file}: ${button}`
       );
     }
-    assert.doesNotMatch(source, /<(a|form|textarea)\b|href=/, file);
+    // Forms exist only on the sign-in screens, so Enter submits and password managers recognise them; they never navigate.
+    assert.doesNotMatch(source, file === 'LoginView.html' ? /<(a|textarea)\b|href=|\saction=/ : /<(a|form|textarea)\b|href=/, file);
     assert.equal((source.match(/<nav\b/g) || []).length, file === 'Index.html' ? 1 : 0, file);
-    // The only text controls are the two date fields of the vacation form.
-    for (const [input] of source.matchAll(/<input\b[^>]*>/g)) assert.ok(file === 'VacationView.html' && /type="date"/.test(input), `${file}: ${input}`);
-    if (file !== 'ScheduleView.html') assert.doesNotMatch(source, /<select\b/, file);
+    // The only text controls are the vacation dates and the sign-in fields.
+    for (const [input] of source.matchAll(/<input\b[^>]*>/g)) {
+      assert.ok((file === 'VacationView.html' && /type="date"/.test(input)) || (file === 'LoginView.html' && /class="text-input"/.test(input)), `${file}: ${input}`);
+    }
+    assert.doesNotMatch(source, /<select\b/, file); // there is no picker any more
   }
 });
 
@@ -730,8 +826,8 @@ test('text meets WCAG AA contrast (4.5:1) on its background in both themes', () 
     ['muted', 'bg'], ['muted', 'surface'], ['muted', 'surface-soft'],
     ['accent-text', 'bg'], ['accent-text', 'surface'], ['accent-text', 'accent-soft'], ['neutral-text', 'neutral-bg'],
     ['on-solid', 'solid'], ['on-solid', 'solid-hover'],
-    // Hero card, teal and (when overdue) coral: text on both ends of the gradient, and on the light tiles.
-    ...['hero-a', 'hero-b', 'overdue-a', 'overdue-b'].flatMap((stop) => [['on-hero', stop], ['on-hero-soft', stop]]),
+    // Hero card, green and (when overdue) coral, one flat colour each: its text, the hint and the tiles.
+    ...['hero-bg', 'overdue-bg'].flatMap((background) => [['on-hero', background], ['on-hero-soft', background]]),
     ['hero-tile-text', 'hero-tile'], ['hero-tile-muted', 'hero-tile'],
     ['overdue-tile-text', 'overdue-tile'], ['overdue-tile-muted', 'overdue-tile'],
     ...[1, 2, 3, 4, 5, 6].map((n) => [`tone-${n}-fg`, `tone-${n}-bg`]),
@@ -745,195 +841,243 @@ test('text meets WCAG AA contrast (4.5:1) on its background in both themes', () 
   }
 });
 
-// Roommate picker (unverified identity)
+// Signing in: identity comes from the server, never from a choice on the page
 
-const pickerOptions = (html) =>
-  [...html.matchAll(/<option value="([^"]*)"( selected)?>([^<]*)<\/option>/g)].map((m) => [m[1], m[3], Boolean(m[2])]);
-const ROOMMATE_KEY = 'chorenest-roommate';
+const tokenOf = (page, index) => page.callArguments[index][0].token;
 
-/** The greeting text after picking `roommateId` on a freshly loaded page. */
-function greetingAfterPicking(roommateId, payload = schedule()) {
-  const page = loadFrontend();
-  page.succeed(payload);
-  page.pick(roommateId);
-  return textOf(page.whoText.innerHTML);
-}
+test('signed out, the page shows only the sign-in card and asks the server for nothing', () => {
+  const page = loadFrontend({ as: null });
+  assert.deepEqual(page.calls, []);
+  assert.equal(page.signedIn(), false);
+  assert.equal(page.authScreen.hidden, false);
+  assert.equal(page.mainContent.hidden, true);
+  assert.equal(page.profileButton.hidden, true);
+  assert.match(textOf(page.authScreen.innerHTML), /^Welcome home Sign in to see whose turn it is\. Username Password Show Sign in Forgot your password\?/);
+  assert.match(page.authScreen.innerHTML, /autocomplete="username"/);
+  assert.match(page.authScreen.innerHTML, /type="password" autocomplete="current-password"/);
+  assert.equal(page.authInputs['sign-in-username'].focused, 1);
+  assert.doesNotMatch(page.authScreen.innerHTML, /<select|Just looking|Not verified/);
+});
 
-test('offers every active roommate and "Just looking", with nobody picked at first', () => {
-  const page = loadFrontend();
+test('signing in sends only the username and password, locks the form while the server works, then loads with the token', () => {
+  const page = loadFrontend({ as: null });
+  page.authInputs['sign-in-username'].value = '  hari ';
+  page.authInputs['sign-in-password'].value = 'a long enough passphrase';
+  page.authSubmit('sign-in');
+  page.authSubmit('sign-in'); // a second Enter while busy sends nothing
+  assert.deepEqual(page.calls, ['signIn']);
+  assert.deepEqual(page.callArguments[0], [{ username: 'hari', password: 'a long enough passphrase' }]);
+  assert.match(textOf(page.authScreen.innerHTML), /Checking your password\. This takes a few seconds…/);
+  assert.match(page.authScreen.innerHTML, /<button class="button auth-submit" type="submit" disabled>Signing in…<\/button>/);
+  assert.match(page.authScreen.innerHTML, /id="sign-in-username"[^>]*disabled/);
+  assert.doesNotMatch(page.authScreen.innerHTML, /a long enough passphrase/, 'the password is never written into the page');
+
+  page.succeed({ ok: true, session: { token: 'token-new', expires_at: FAR_FUTURE }, viewer: viewerOf('Hari') });
+  assert.equal(page.signedIn(), true);
+  assert.equal(JSON.parse(page.storage.get(SESSION_KEY)).token, 'token-new');
+  assert.deepEqual(page.calls, ['signIn', 'getRotationSchedule']);
+  assert.deepEqual(page.callArguments[1], [{ token: 'token-new' }]);
   page.succeed(schedule());
-  assert.deepEqual(pickerOptions(page.app.innerHTML), [
-    ['', 'Just looking', false],
-    ['id-Arun', 'Arun', false],
-    ['id-Hari', 'Hari', false],
-    ['id-Jijo', 'Jijo', false],
-  ]);
-  const text = textOf(page.app.innerHTML);
-  assert.match(text, /Hi there!/);
-  assert.match(text, /Pick your name to see your turn at a glance\./);
-  assert.match(page.app.innerHTML, /<label for="who-select">Who are you\?<\/label><select class="who-select" id="who-select"/);
+  assert.equal(hasMarkButton(page.app.innerHTML), true, 'Hari, from the server, may mark Hari’s turn');
+  assert.match(textOf(page.profileButton.innerHTML), /Hari Admin$/);
 });
 
-test('picking a roommate greets them and is remembered, without re-rendering the picker', () => {
-  const page = loadFrontend();
-  page.succeed(schedule());
-  const before = page.app.innerHTML;
-  page.pick('id-Jijo');
-  assert.equal(page.app.innerHTML, before, 'the picker keeps its focus because only the greeting text changes');
-  assert.equal(textOf(page.whoText.innerHTML), 'Hi, Jijo! Your next turn: Sat 24 – Sun 25 Jan.');
-  assert.equal(page.storage.get(ROOMMATE_KEY), 'id-Jijo');
+test('sign-in refusals are explained in fixed words; the username stays, the password is cleared and focused', () => {
+  const cases = [
+    [failure('LOGIN_FAILED'), /Check your username and password\. After several failed attempts, wait 15 minutes\./],
+    [failure('TEMP_PASSWORD_EXPIRED'), /temporary password has expired\. Ask the app owner/],
+    [failure('BUSY'), /busy right now/],
+    [failure('SOMETHING_NEW'), /Something went wrong/],
+    [{ ok: true, session: { token: 'x', expires_at: '2000-01-01T00:00:00.000Z' }, viewer: viewerOf('Hari') }, /Something went wrong/],
+  ];
+  for (const [result, message] of cases) {
+    const page = loadFrontend({ as: null });
+    page.authInputs['sign-in-username'].value = 'hari';
+    page.authInputs['sign-in-password'].value = 'wrong password';
+    page.authSubmit('sign-in');
+    page.succeed(result);
+    assert.match(textOf(page.authScreen.innerHTML), message);
+    assert.doesNotMatch(page.authScreen.innerHTML, /Server detail/);
+    assert.match(page.authScreen.innerHTML, /id="sign-in-username"[^>]*value="hari"/);
+    assert.equal(page.authInputs['sign-in-password'].focused, 1);
+    assert.equal(page.signedIn(), false);
+    assert.equal(page.storage.has(SESSION_KEY), false);
+  }
+  const offline = loadFrontend({ as: null });
+  offline.authInputs['sign-in-username'].value = 'hari';
+  offline.authInputs['sign-in-password'].value = 'x';
+  offline.authSubmit('sign-in');
+  offline.fail();
+  assert.match(textOf(offline.authScreen.innerHTML), /Couldn’t reach ChoreNest/);
+
+  const empty = loadFrontend({ as: null });
+  empty.authSubmit('sign-in');
+  assert.deepEqual(empty.calls, [], 'an empty form is not sent');
+  assert.match(textOf(empty.authScreen.innerHTML), /Enter your username and password\./);
 });
 
-test('the pick is remembered across reloads and shown as selected', () => {
-  const first = loadFrontend();
-  first.succeed(schedule());
-  first.pick('id-Arun');
-
-  const again = loadFrontend({ storage: first.storage });
-  again.succeed(schedule());
-  assert.match(textOf(again.app.innerHTML), /Hi, Arun! Your next turn: Sat 31 Jan – Sun 1 Feb\./);
-  assert.deepEqual(pickerOptions(again.app.innerHTML).filter((option) => option[2]), [['id-Arun', 'Arun', true]]);
+test('the password can be shown and hidden', () => {
+  const page = loadFrontend({ as: null });
+  const field = page.authInputs['sign-in-password'];
+  const button = Object.assign({}, { attributes: { 'data-action': 'toggle-password', 'data-target': 'sign-in-password' }, textContent: 'Show' });
+  button.getAttribute = (name) => button.attributes[name] || null;
+  button.setAttribute = (name, value) => { button.attributes[name] = value; };
+  const click = () => page.authScreen.listeners.click({ target: button });
+  click();
+  assert.equal(field.type, 'text');
+  assert.equal(button.attributes['aria-pressed'], 'true');
+  assert.equal(button.attributes['aria-label'], 'Hide password');
+  assert.equal(button.textContent, 'Hide');
+  click();
+  assert.equal(field.type, 'password');
+  assert.equal(button.attributes['aria-label'], 'Show password');
 });
 
-test('"Just looking" clears the pick, and so does a roommate who is gone', () => {
-  const page = loadFrontend();
-  page.succeed(schedule());
-  page.pick('id-Hari');
-  page.pick('');
-  assert.match(textOf(page.whoText.innerHTML), /^Hi there!/);
-  assert.equal(page.storage.has(ROOMMATE_KEY), false);
+test('a temporary password must be replaced before anything of the household is shown', () => {
+  const page = loadFrontend({ as: null });
+  page.authInputs['sign-in-username'].value = 'jijo';
+  page.authInputs['sign-in-password'].value = 'TempPassw0rdXyzK';
+  page.authSubmit('sign-in');
+  page.succeed({ ok: true, session: { token: 'token-temp', expires_at: FAR_FUTURE }, viewer: viewerOf('Jijo', { must_change_password: true }) });
+  assert.equal(page.signedIn(), false);
+  assert.deepEqual(page.calls, ['signIn'], 'no household data is requested');
+  assert.match(textOf(page.authScreen.innerHTML), /^Choose your own password Hi Jijo! You signed in with a temporary password\./);
+  assert.equal(page.authInputs['current-password'].focused, 1);
 
-  page.pick('id-Hari');
-  page.pick('not-a-roommate');
-  assert.match(textOf(page.whoText.innerHTML), /^Hi there!/);
-  assert.equal(page.storage.has(ROOMMATE_KEY), false);
-
-  const stale = new Map([[ROOMMATE_KEY, 'id-Gone']]);
-  const reloaded = loadFrontend({ storage: stale });
-  reloaded.succeed(schedule());
-  assert.match(textOf(reloaded.app.innerHTML), /Hi there!/);
-  assert.equal(stale.has(ROOMMATE_KEY), false);
-  assert.equal(pickerOptions(reloaded.app.innerHTML).some((option) => option[2]), false);
-});
-
-test('the personal message follows the current and upcoming turns', () => {
-  assert.equal(greetingAfterPicking('id-Hari'), 'Hi, Hari! It’s your turn this weekend.');
-  assert.equal(greetingAfterPicking('id-Hari', schedule({ current: { status: 'overdue' } })), 'Hi, Hari! Your turn is overdue.');
-  assert.equal(greetingAfterPicking('id-Hari', schedule({ current: { status: 'waiting' } })), 'Hi, Hari! You’re up next.');
-  assert.equal(
-    greetingAfterPicking('id-Jijo', schedule({ current: { owner: person('Jijo'), assignee: person('Hari') } })),
-    'Hi, Jijo! Your turn is covered by Hari (swap).'
-  );
-  const withKim = schedule({ roommates: [person('Hari'), person('Kim')] });
-  assert.equal(greetingAfterPicking('id-Kim', withKim), 'Hi, Kim! You’re not up in the next few turns.');
-});
-
-test('names in the picker and greeting are escaped, including hostile ids', () => {
-  const hostileName = person('<img src=x onerror=alert(1)>', 'id-bad');
-  const hostileId = { roommate_id: 'x" onfocus="alert(1)', name: 'Eve' };
-  const page = loadFrontend();
-  page.succeed(schedule({ roommates: [hostileName, hostileId, person('Hari')] }));
-  page.pick('id-bad');
-  const html = page.app.innerHTML + page.whoText.innerHTML;
-  assert.doesNotMatch(html, /<img/);
-  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
-  assert.doesNotMatch(html, /value="x" onfocus/);
-  assert.match(page.app.innerHTML, /value="x&quot; onfocus=&quot;alert\(1\)"/);
-
-  page.pick(hostileId.roommate_id);
-  assert.match(textOf(page.whoText.innerHTML), /^Hi, Eve!/);
-});
-
-test('the pick is presented as unverified: a friendly greeting, never a login', () => {
-  const page = loadFrontend();
-  page.succeed(schedule());
-  page.pick('id-Hari');
-  const text = textOf(page.app.innerHTML + page.whoText.innerHTML);
-  assert.match(text, /Just for a friendly greeting\. This isn’t a login\./);
-  assert.doesNotMatch(text, /log in|logged in|sign in|signed in|verified|welcome back|authenticated/i);
-});
-
-test('the pick never reaches the server and only decides whether the button is shown', () => {
-  const page = loadFrontend();
-  page.succeed(schedule());
-  page.pick('id-Hari');
-  page.fail();
-  page.clickRetry();
-  assert.deepEqual(page.callArguments, [[], []], 'every getRotationSchedule call has no arguments, so the pick is never sent');
-  assert.deepEqual([...page.storage.keys()], [ROOMMATE_KEY]);
-
-  // Everything outside the greeting section is identical whoever is picked.
-  const withoutGreeting = (html) =>
-    html.replace(/<section class="who"[\s\S]*?<\/section>/, '').replace(/<button class="button mark-button"[\s\S]*?<\/button>/, '');
-  const render = (stored) => {
-    const loaded = loadFrontend({ storage: new Map(stored ? [[ROOMMATE_KEY, stored]] : []) });
-    loaded.succeed(schedule());
-    return loaded.app.innerHTML;
+  const fill = (current, next, repeat) => {
+    page.authInputs['current-password'].value = current;
+    page.authInputs['new-password'].value = next;
+    page.authInputs['repeat-password'].value = repeat;
+    page.authSubmit('change-password');
   };
-  const baseline = withoutGreeting(render(null));
-  for (const id of ['id-Hari', 'id-Jijo', 'id-Arun', 'id-Gone']) assert.equal(withoutGreeting(render(id)), baseline, id);
-  assert.notEqual(render('id-Hari'), render(null), 'only the greeting differs');
+  fill('TempPassw0rdXyzK', 'short', 'short');
+  assert.match(textOf(page.authScreen.innerHTML), /needs at least 10 characters/);
+  fill('TempPassw0rdXyzK', 'our cosy flat 2026', 'our cosy flat 2027');
+  assert.match(textOf(page.authScreen.innerHTML), /don’t match/);
+  fill('TempPassw0rdXyzK', 'TempPassw0rdXyzK', 'TempPassw0rdXyzK');
+  assert.match(textOf(page.authScreen.innerHTML), /different from the temporary one/);
+  fill('', 'our cosy flat 2026', 'our cosy flat 2026');
+  assert.match(textOf(page.authScreen.innerHTML), /Fill in all three fields/);
+  assert.deepEqual(page.calls, ['signIn'], 'mistakes are caught before asking the server');
+
+  fill('TempPassw0rdXyzK', 'our cosy flat 2026', 'our cosy flat 2026');
+  assert.deepEqual(page.callArguments[1], [{ token: 'token-temp', current_password: 'TempPassw0rdXyzK', new_password: 'our cosy flat 2026' }]);
+  assert.match(textOf(page.authScreen.innerHTML), /Saving your new password\. This takes about 10 seconds…/);
+  page.succeed(failure('PASSWORD_CHANGE_FAILED'));
+  assert.match(textOf(page.authScreen.innerHTML), /too many attempts/);
+
+  fill('TempPassw0rdXyzK', 'our cosy flat 2026', 'our cosy flat 2026');
+  page.succeed({ ok: true, session: { token: 'token-final', expires_at: FAR_FUTURE }, viewer: viewerOf('Jijo') });
+  assert.equal(page.signedIn(), true);
+  assert.equal(JSON.parse(page.storage.get(SESSION_KEY)).token, 'token-final');
+  assert.deepEqual(page.callArguments[page.calls.length - 1], [{ token: 'token-final' }]);
 });
 
-test('the picker works for this visit when storage is blocked, and ignores changes before the schedule loads', () => {
-  const page = loadFrontend({ storageBlocked: true });
-  assert.doesNotThrow(() => page.pick('id-Hari'));
+test('a stored session opens the app straight away, and every household call carries only the token', () => {
+  const page = loadFrontend({ as: 'Hari' });
+  assert.equal(page.signedIn(), true);
+  assert.deepEqual(page.calls, ['getRotationSchedule']);
   page.succeed(schedule());
-  assert.doesNotThrow(() => page.pick('id-Hari'));
-  assert.match(textOf(page.whoText.innerHTML), /^Hi, Hari!/);
-  assert.equal(page.storage.size, 0);
-
-  const early = loadFrontend();
-  early.pick('id-Hari');
-  assert.equal(early.storage.has(ROOMMATE_KEY), false);
-  early.changeElsewhere();
-  assert.equal(early.whoText.innerHTML, '');
+  assert.deepEqual(page.calls, LOADED);
+  for (const [request] of page.callArguments) assert.deepEqual(request, { token: 'token-Hari' });
+  page.clickMark();
+  page.dialogClick('confirm-clean');
+  const [request] = page.callArguments[2];
+  assert.deepEqual(Object.keys(request).sort(), ['due_at', 'rotation_id', 'token']);
+  assert.equal(request.token, 'token-Hari');
 });
 
-test('empty and error states have no picker, and a response without roommates is rejected', () => {
-  for (const response of [failure('ROTATION_EMPTY'), failure('DATABASE_NOT_SET_UP')]) {
-    const page = loadFrontend();
-    page.succeed(response);
-    assert.doesNotMatch(page.app.innerHTML, /<select/);
+test('an expired, ended or revoked session goes back to sign-in, forgets the token and clears what was shown', () => {
+  for (const code of ['UNAUTHENTICATED', 'TEMP_PASSWORD_EXPIRED']) {
+    const page = loadFrontend({ as: 'Hari' });
+    page.succeed(failure(code));
+    assert.equal(page.signedIn(), false, code);
+    assert.equal(page.storage.has(SESSION_KEY), false, code);
+    assert.equal(page.app.innerHTML, '', code);
+    assert.match(textOf(page.authScreen.innerHTML), code === 'UNAUTHENTICATED' ? /Your session has ended/ : /temporary password has expired/);
   }
-  for (const roommates of [undefined, 'Hari', [{}], [null]]) {
-    const page = loadFrontend();
-    page.succeed({ ...schedule(), roommates });
-    assert.match(textOf(page.app.innerHTML), /Error code: UNEXPECTED_RESPONSE/, JSON.stringify(roommates));
-  }
+  const old = loadFrontend({ storage: new Map([[SESSION_KEY, JSON.stringify({ token: 't', expires_at: '2000-01-01T00:00:00.000Z' })]]) });
+  assert.deepEqual(old.calls, [], 'an expired session is not even tried');
+  assert.equal(old.signedIn(), false);
+  const junk = loadFrontend({ storage: new Map([[SESSION_KEY, '{not json']]) });
+  assert.equal(junk.signedIn(), false);
+
+  const required = loadFrontend({ as: 'Jijo' });
+  required.succeed(failure('PASSWORD_CHANGE_REQUIRED'));
+  assert.match(textOf(required.authScreen.innerHTML), /^Choose your own password/);
+  assert.equal(required.storage.has(SESSION_KEY), true, 'the session stays: it is needed for the change');
 });
 
-test('the picker code grants no privileges and sends nothing to the server', () => {
-  for (const [file, source] of frontendSources()) {
-    // The one place "admin" appears is the Beta notice: it says the admin is away, and grants nothing.
-    assert.doesNotMatch(source.replace(/BETA_NOTICE = '[^']*'/, ''), /\badmin\b|\bpermissions?\b|\brole\b(?!=)/i, file);
-    assert.doesNotMatch(source, /getRotationSchedule\([^)]/, file);
+test('a session that ends during a save goes back to sign-in instead of showing an error, and late answers are ignored', () => {
+  const page = loadFrontend({ as: 'Hari' });
+  page.succeed(schedule());
+  page.clickMark();
+  page.dialogClick('confirm-clean');
+  page.succeed(failure('UNAUTHENTICATED'));
+  assert.equal(page.signedIn(), false);
+  assert.equal(page.dialog.open, false);
+
+  const late = loadFrontend({ as: 'Hari' });
+  late.profileClick('sign-out'); // signed out before the schedule arrived
+  late.succeedCall(0, schedule());
+  assert.equal(late.app.innerHTML, '', 'an answer for the previous session is dropped');
+  assert.equal(late.signedIn(), false);
+});
+
+test('signing out forgets the session here at once, tells the server, and clears the page for the next person', () => {
+  const page = loadFrontend({ as: 'Hari' });
+  page.succeed(schedule());
+  page.succeed(vacationList(vacationItem('Hari')));
+  page.openProfile();
+  page.profileClick('sign-out');
+  assert.equal(page.signedIn(), false);
+  assert.equal(page.profileDialog.open, false);
+  assert.equal(page.storage.has(SESSION_KEY), false);
+  assert.equal(page.app.innerHTML, '');
+  assert.equal(page.panels.vacation.innerHTML, '');
+  assert.equal(page.profileButton.innerHTML, '');
+  assert.match(textOf(page.authScreen.innerHTML), /You’re signed out\./);
+  assert.equal(page.calls[page.calls.length - 1], 'signOut');
+  assert.deepEqual(page.callArguments[page.calls.length - 1], [{ token: 'token-Hari' }]);
+});
+
+test('the old unverified name pick is removed from the device and plays no part', () => {
+  const storage = new Map([['chorenest-roommate', 'id-Hari']]);
+  const page = loadFrontend({ storage, as: 'Jijo' });
+  assert.equal(storage.has('chorenest-roommate'), false);
+  page.succeed(schedule());
+  assert.equal(hasMarkButton(page.app.innerHTML), false, 'Jijo is signed in, whatever was picked before');
+});
+
+test('the page code holds no identity of its own: no picker, no roommate id in any request', () => {
+  for (const file of ['App.html', 'Shell.html', 'ScheduleView.html', 'VacationView.html', 'Session.html', 'LoginView.html']) {
+    const source = read(file);
+    assert.doesNotMatch(source, /who-select|select-roommate|Just looking|Not verified|Pick your name|UNVERIFIED|TRUST_NOTE/, file);
+    assert.doesNotMatch(source, /roommate_id:\s*selected|roommate_id:\s*viewer/, file);
   }
-  const identity = read('Identity.html');
-  assert.doesNotMatch(identity, /google\.script/);
-  assert.match(identity, /NOT authentication/);
-  assert.match(read('App.html'), /\.getRotationSchedule\(\);/);
+  assert.equal(fs.existsSync(path.join(FRONTEND_DIR, 'Identity.html')), false);
 });
 
 // Slice 04D polish
 
-test('contextual emojis are decorative only, and upcoming turns form a timeline', () => {
+test('contextual emojis are decorative only, and later turns form a timeline', () => {
   const page = loadFrontend();
   page.succeed(
     schedule({
       current: { owner: person('Jijo'), assignee: person('Hari'), vacation_conflict_id: 'v' },
-      upcoming: [turn('Arun', 1, { skipped: [person('Kim')] }), turn('Hari', 2), turn('Jijo', 3)],
+      upcoming: [turn('Arun', 1, { skipped: [person('Kim')] }), turn('Kim', 2), turn('Hari', 3)],
+      roommates: [person('Arun'), person('Hari'), person('Jijo'), person('Kim')],
     })
   );
   const html = page.app.innerHTML;
-  for (const emoji of ['👋', '🧹', '✨', '🏖️', '🔄']) assert.match(html, new RegExp(`aria-hidden="true">${emoji}</span>`), emoji);
+  for (const emoji of ['🧹', '✨', '🏖️', '🔄']) assert.match(html, new RegExp(`aria-hidden="true">${emoji}</span>`), emoji);
 
   const withoutDecoration = html.replace(/<span[^>]*aria-hidden="true"[^>]*>[^<]*<\/span>/g, '');
   assert.doesNotMatch(withoutDecoration, /\p{Extended_Pictographic}/u, 'every emoji is hidden from screen readers');
 
   assert.equal(html.match(/<ol class="timeline">/g).length, 1);
   const names = [...html.matchAll(/<li class="timeline-item">[\s\S]*?class="name">([^<]*)</g)].map((m) => m[1]);
-  assert.deepEqual(names, ['Arun', 'Hari', 'Jijo']);
+  assert.deepEqual(names, ['Arun', 'Kim', 'Hari']);
   assert.doesNotMatch(html, /turn-card/);
 
   const overdue = loadFrontend();
@@ -947,7 +1091,7 @@ test('hover effects are limited to hover-capable devices, and keyboard focus is 
   const hover = blockAt(css, css.indexOf('@media (hover: hover)'));
   assert.match(hover, /:hover/);
   assert.doesNotMatch(css.replace(hover, ''), /:hover/);
-  for (const selector of ['.theme-toggle button:focus-visible', '.button:focus-visible', '.who-select:focus-visible', '.tab:focus-visible', '.profile:focus-visible']) {
+  for (const selector of ['.theme-toggle button:focus-visible', '.button:focus-visible', '.text-input:focus-visible', '.password-toggle:focus-visible', '.link-button:focus-visible', '.tab:focus-visible', '.profile:focus-visible']) {
     assert.ok(css.includes(selector), selector);
   }
   assert.match(css, /\.button:active/);
@@ -955,32 +1099,21 @@ test('hover effects are limited to hover-capable devices, and keyboard focus is 
 
 // Marking the turn as cleaned
 
-const HARI = new Map([[ROOMMATE_KEY, 'id-Hari']]);
+const HARI = 'Hari';
 const hasMarkButton = (html) => /data-action="mark-cleaned"/.test(html);
-const withHari = (payload = schedule(), storage = new Map(HARI)) => {
-  const page = loadFrontend({ storage });
+const withHari = (payload = schedule(), as = HARI) => {
+  const page = loadFrontend({ as });
   page.succeed(payload);
   return page;
 };
 
-test('the button is offered only to the picked roommate, only on their open turn, and follows the pick', () => {
-  assert.equal(hasMarkButton(withHari(schedule(), new Map()).app.innerHTML), false, 'nobody picked');
-  assert.equal(hasMarkButton(withHari(schedule(), new Map([[ROOMMATE_KEY, 'id-Jijo']])).app.innerHTML), false, 'not the assignee');
-  assert.equal(hasMarkButton(withHari(schedule(), new Map([[ROOMMATE_KEY, 'id-Gone']])).app.innerHTML), false, 'stale pick');
+test('the button is offered only to the signed-in assignee, and only on their open turn', () => {
+  assert.equal(hasMarkButton(withHari(schedule(), 'Jijo').app.innerHTML), false, 'not the assignee');
+  assert.equal(hasMarkButton(withHari(schedule(), 'Gone').app.innerHTML), false, 'not in the roster');
   assert.equal(hasMarkButton(withHari().app.innerHTML), true);
   assert.equal(hasMarkButton(withHari(schedule({ current: { status: 'overdue' } })).app.innerHTML), true, 'overdue turns can be completed');
   assert.equal(hasMarkButton(withHari(schedule({ current: { status: 'waiting' } })).app.innerHTML), false, 'not open yet');
-
-  const page = loadFrontend();
-  page.succeed(schedule());
-  const before = page.app.innerHTML;
-  page.pick('id-Hari');
-  assert.equal(hasMarkButton(page.markAction.innerHTML), true);
-  page.pick('id-Jijo');
-  assert.equal(page.markAction.innerHTML, '');
-  page.pick('');
-  assert.equal(page.markAction.innerHTML, '');
-  assert.equal(page.app.innerHTML, before, 'the picker is not re-rendered');
+  assert.doesNotMatch(withHari(schedule(), 'Jijo').app.innerHTML, /Pick your name|open-profile|hero-hint/, 'no hint to become someone else');
 });
 
 test('the button asks first in a friendly dialog, and Not yet leaves everything alone', () => {
@@ -993,11 +1126,11 @@ test('the button asks first in a friendly dialog, and Not yet leaves everything 
   assert.match(text, /Hari, you’re telling everyone the whole home is clean\./);
   assert.match(text, /can’t be undone from the app/);
   assert.match(page.dialog.innerHTML, /data-action="cancel-clean" autofocus>Not yet</, 'the safe choice has focus');
-  assert.deepEqual(page.calls, ['getRotationSchedule'], 'nothing is sent yet');
+  assert.deepEqual(page.calls, LOADED, 'nothing is sent yet');
 
   page.dialogClick('cancel-clean');
   assert.equal(page.dialog.open, false);
-  assert.deepEqual(page.calls, ['getRotationSchedule']);
+  assert.deepEqual(page.calls, LOADED);
 });
 
 test('confirming sends exactly the turn the page showed, ignores duplicate clicks, then shows a banner and refreshes', () => {
@@ -1006,16 +1139,16 @@ test('confirming sends exactly the turn the page showed, ignores duplicate click
   page.dialogClick('confirm-clean');
   page.dialogClick('confirm-clean');
   page.dialogClick('confirm-clean');
-  assert.deepEqual(page.calls, ['getRotationSchedule', 'markCleaned'], 'one request, however often it is clicked');
-  assert.deepEqual(plain(page.callArguments[1]), [{ roommate_id: 'id-Hari', rotation_id: 'slot-Hari', due_at: turn('Hari', 0).due_at }]);
+  assert.deepEqual(page.calls, [...LOADED, 'markCleaned'], 'one request, however often it is clicked');
+  assert.deepEqual(plain(page.callArguments[2]), [{ token: 'token-Hari', rotation_id: 'slot-Hari', due_at: turn('Hari', 0).due_at }]);
   assert.match(textOf(page.dialog.innerHTML), /Saving…/);
   assert.doesNotMatch(page.dialog.innerHTML, /<button/);
   page.clickMark();
-  assert.equal(page.callArguments.length, 2, 'the button cannot start a second save while one is running');
+  assert.equal(page.callArguments.length, 3, 'the button cannot start a second save while one is running');
 
   page.succeed({ ok: true, completed_at: '2026-01-14T12:00:00.000Z' });
   assert.equal(page.dialog.open, false);
-  assert.deepEqual(page.calls, ['getRotationSchedule', 'markCleaned', 'getRotationSchedule'], 'the schedule is reloaded');
+  assert.deepEqual(page.calls, [...LOADED, 'markCleaned', 'getRotationSchedule'], 'the schedule is reloaded, the vacations are not');
   assert.match(page.app.innerHTML, /Loading schedule/);
 
   page.succeed(schedule({ current: turn('Jijo', 1) }));
@@ -1051,7 +1184,7 @@ test('every failure is explained in plain words, nothing leaks, and the schedule
     assert.match(page.app.innerHTML, /<p class="notice notice-error" role="alert">/, code);
     assert.match(textOf(page.app.innerHTML), message, code);
     assert.doesNotMatch(page.app.innerHTML, /secret|Server detail/, code);
-    assert.deepEqual(page.calls, ['getRotationSchedule', 'markCleaned', 'getRotationSchedule'], code);
+    assert.deepEqual(page.calls, [...LOADED, 'markCleaned', 'getRotationSchedule'], code);
     assert.equal(page.dialog.open, false, code);
   }
 });
@@ -1063,7 +1196,7 @@ test('if the answer never arrives or makes no sense, the page says it could not 
     page.dialogClick('confirm-clean');
     if (answer === 'network failure') page.fail();
     else page.succeed(answer);
-    assert.deepEqual(page.calls, ['getRotationSchedule', 'markCleaned', 'getRotationSchedule']);
+    assert.deepEqual(page.calls, [...LOADED, 'markCleaned', 'getRotationSchedule']);
     page.succeed(schedule());
     assert.match(page.app.innerHTML, /<p class="notice notice-info" role="status">We couldn’t confirm that it saved\. Check the schedule below before trying again\.<\/p>/);
   }
@@ -1071,7 +1204,7 @@ test('if the answer never arrives or makes no sense, the page says it could not 
 
 test('names in the dialog and the banner are escaped', () => {
   const hostile = person('<b onmouseover=alert(1)>Hari</b>', 'id-Hari');
-  const page = loadFrontend({ storage: new Map(HARI) });
+  const page = loadFrontend({ as: HARI });
   page.succeed(schedule({ current: { owner: hostile, assignee: hostile }, roommates: [hostile] }));
   page.clickMark();
   assert.doesNotMatch(page.dialog.innerHTML, /<b /);
@@ -1083,7 +1216,7 @@ test('names in the dialog and the banner are escaped', () => {
   assert.match(page.app.innerHTML, /Nice work, &lt;b onmouseover=alert\(1\)&gt;Hari&lt;\/b&gt;!/);
 });
 
-// Vacations (trust-based, interim)
+// Vacations: an inline household overview on the Vacation tab, and "Who's away" on the Schedule (trust-based, interim)
 
 const vacationItem = (name, extra = {}) => ({
   vacation_id: `v-${name}`,
@@ -1097,102 +1230,361 @@ const vacationItem = (name, extra = {}) => ({
   ...extra,
 });
 const vacationList = (...items) => ({ ok: true, vacations: items });
+const DAY_MS = 24 * 60 * 60 * 1000;
+const isoIn = (days) => new Date(Date.now() + days * DAY_MS).toISOString();
 
-function openedVacations(list = vacationList(), storage = new Map(HARI)) {
-  const page = withHari(schedule(), storage);
-  page.openVacationsClick();
-  page.succeed(list);
+/** A page with the schedule and the vacation list answered (index 0 and 1 of the pending calls). */
+function loadedVacations(list = vacationList(), as = HARI) {
+  const page = withHari(schedule(), as);
+  page.succeedCall(1, list);
   return page;
 }
+const panelText = (page) => textOf(page.panels.vacation.innerHTML);
 const dialogText = (page) => textOf(page.vacationDialog.innerHTML);
 const berlinToday = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Berlin' }).format(new Date());
 const SAVED = { ok: true, vacation_id: 'new-id' };
 
-test('the Vacation tab has a Vacations card, and the list is only loaded when it is opened', () => {
-  const page = withHari();
-  assert.match(textOf(page.panels.vacation.innerHTML), /Vacation Vacations Going away\? Plan it here and your turns are skipped, with no make-up turn\. See and plan vacations/);
-  assert.doesNotMatch(page.app.innerHTML, /vacations-title/, 'the schedule itself is unchanged');
-  assert.deepEqual(page.calls, ['getRotationSchedule']);
-  assert.equal(page.vacationDialog.open, false);
+test('vacations load once, right after the first schedule answer, for the Vacation tab and "Who’s away"', () => {
+  const page = loadFrontend({ as: HARI });
+  assert.deepEqual(page.calls, ['getRotationSchedule'], 'the schedule is asked for first');
+  assert.match(panelText(page), /Loading vacations…/);
 
-  page.openVacationsClick();
-  assert.equal(page.vacationDialog.open, true);
-  assert.match(dialogText(page), /Loading…/);
-  assert.deepEqual(page.calls, ['getRotationSchedule', 'listVacations']);
-  assert.deepEqual(plain(page.callArguments[1]), [], 'listing sends nothing');
+  page.succeed(schedule());
+  assert.deepEqual(page.calls, LOADED);
+  assert.deepEqual(plain(page.callArguments[1]), [{ token: 'token-Hari' }], 'listing sends only the session');
+  assert.match(textOf(page.app.innerHTML), /Who’s away Checking vacations…/);
+  const schedulePage = page.app.innerHTML;
+
+  page.succeedCall(1, vacationList(vacationItem('Arun', { state: 'away' })));
+  assert.match(panelText(page), /Away now Arun Away now/);
+  assert.match(textOf(page.awaySlot.innerHTML), /^Who’s away Arun Away · back Mon 12 Jan$/);
+  assert.equal(page.app.innerHTML, schedulePage, 'only the "Who’s away" slot changes: the picker keeps focus and the turns stay as they are');
+
+  for (const tab of ['vacation', 'schedule', 'vacation']) page.tabClick(tab);
+  assert.deepEqual(page.calls, LOADED, 'a recent list is kept');
 });
 
-test('the list shows names, Berlin dates, affected weekends and their skip status, under a trust-based notice', () => {
-  const away = vacationItem('Arun', {
-    state: 'away',
-    cancellable: false,
-    weekends: [
-      { weekend_starts_at: '2026-01-16T23:00:00.000Z', due_at: '2026-01-18T23:00:00.000Z', status: 'not_their_turn' },
-      { weekend_starts_at: '2026-06-05T22:00:00.000Z', due_at: '2026-06-07T22:00:00.000Z', status: 'later' },
-    ],
-  });
-  const page = openedVacations(vacationList(vacationItem('Jijo'), away));
-  const text = dialogText(page);
-  assert.match(text, /Jijo Upcoming Fri 9 Jan – back Mon 12 Jan Sat 10 – Sun 11 Jan · Turn skipped/);
-  assert.match(text, /Arun Away now Fri 9 Jan – back Mon 12 Jan Sat 17 – Sun 18 Jan · No turn that weekend Sat 6 – Sun 7 Jun · Not scheduled yet/);
-  assert.match(text, /Trust-based for now: anyone with this link can change a vacation for the name picked on the main screen\. The selection is not a login and is not verified\./);
-  assert.doesNotMatch(text, /verified as|logged in|signed in|authenticated|log in/i);
-  assert.match(page.vacationDialog.innerHTML, /class="chip chip-skipped"/);
+test('compact cards show name, status and Berlin dates; the cleaning impact is folded away', () => {
+  const page = loadedVacations(vacationList(
+    vacationItem('Jijo'),
+    vacationItem('Arun', {
+      state: 'away',
+      cancellable: false,
+      weekends: [
+        { weekend_starts_at: '2026-01-16T23:00:00.000Z', due_at: '2026-01-18T23:00:00.000Z', status: 'not_their_turn' },
+        { weekend_starts_at: '2026-06-05T22:00:00.000Z', due_at: '2026-06-07T22:00:00.000Z', status: 'later' },
+      ],
+    }),
+    // Across the March clock change: away Sunday 29 March, back Wednesday 1 April (summer time).
+    vacationItem('Kim', { state: 'returned', cancellable: false, start_date: '2026-03-28T23:00:00.000Z', return_date: '2026-03-31T22:00:00.000Z', weekends: [] }),
+    vacationItem('Hari', {
+      state: 'returned',
+      cancellable: false,
+      start_date: '2026-04-02T22:00:00.000Z',
+      return_date: '2026-04-06T22:00:00.000Z',
+      weekends: [{ weekend_starts_at: '2026-04-03T22:00:00.000Z', due_at: '2026-04-05T22:00:00.000Z', status: 'past' }],
+    })
+  ));
+  const html = page.panels.vacation.innerHTML;
+  const text = panelText(page);
+  assert.match(text, /^Vacations Turns that fall in a vacation are skipped, with no make-up turn\. Plan vacation /);
+  assert.match(text, /Away now Arun Away now First day away Fri 9 Jan First day back Mon 12 Jan Cleaning impact Sat 17 – Sun 18 Jan · No turn that weekend Sat 6 – Sun 7 Jun · Not scheduled yet/);
+  assert.match(text, /Upcoming Jijo Upcoming First day away Fri 9 Jan First day back Mon 12 Jan Cleaning impact · 1 turn skipped Sat 10 – Sun 11 Jan · Turn skipped/);
+  assert.match(text, /Recently back Hari Returned First day away Fri 3 Apr First day back Tue 7 Apr Cleaning impact Sat 4 – Sun 5 Apr · Past weekend Kim Returned First day away Sun 29 Mar First day back Wed 1 Apr/, 'latest return first');
+  assert.ok(text.indexOf('Away now Arun') < text.indexOf('Upcoming Jijo') && text.indexOf('Upcoming Jijo') < text.indexOf('Recently back'));
+  assert.equal((html.match(/<details class="impact"><summary>/g) || []).length, 3, 'folded (no "open" attribute), and left out when no weekend is touched');
+  assert.doesNotMatch(html, /<details[^>]* open/);
+  assert.match(html, /<span class="badge badge-away">Away now<\/span>/);
+  assert.match(html, /class="chip chip-skipped"/);
+  assert.doesNotMatch(text, /name picked|isn’t a login|Not verified/);
 });
 
-test('an empty list, a server problem and a network failure are each explained, and Try again reloads', () => {
-  const empty = openedVacations(vacationList());
-  assert.match(dialogText(empty), /No vacations planned\./);
+test('"Who’s away" shows who is away now and who leaves within two weeks, and nothing else', () => {
+  const page = loadedVacations(vacationList(
+    vacationItem('Arun', { state: 'away', return_date: isoIn(5) }),
+    vacationItem('Jijo', { start_date: isoIn(3), return_date: isoIn(9) }),
+    vacationItem('Kim', { start_date: isoIn(30), return_date: isoIn(40) }),
+    vacationItem('Hari', { state: 'returned', start_date: isoIn(-9), return_date: isoIn(-2) })
+  ));
+  const text = textOf(page.awaySlot.innerHTML);
+  assert.match(text, /^Who’s away Arun Away · back \w{3} \d{1,2} \w{3} Jijo Leaves \w{3} \d{1,2} \w{3}$/);
+  assert.doesNotMatch(text, /Kim|Hari/);
+  assert.doesNotMatch(page.awaySlot.innerHTML, /<button/, 'information only');
+
+  const empty = loadedVacations(vacationList(vacationItem('Kim', { start_date: isoIn(30), return_date: isoIn(40) })));
+  assert.equal(textOf(empty.awaySlot.innerHTML), 'Who’s away Everyone’s home.');
+});
+
+test('loading, empty, server problem, malformed answer and network failure each have a clear state, and Try again reloads', () => {
+  assert.match(panelText(loadedVacations(vacationList())), /Everyone’s home No vacations are planned\./);
 
   for (const [answer, pattern] of [
-    [{ ok: false, error: { code: 'DATABASE_NOT_SET_UP', message: 'Server detail secret' } }, /We couldn’t load the vacations/],
-    [undefined, /We couldn’t load the vacations/],
-    [{}, /We couldn’t load the vacations/],
-    [{ ok: true }, /We couldn’t load the vacations/],
-    ['network', /We couldn’t reach the server/],
+    [{ ok: false, error: { code: 'DATABASE_NOT_SET_UP', message: 'Server detail secret' } }, /Couldn’t load vacations Try again in a moment\./],
+    [undefined, /Couldn’t load vacations Try again in a moment\./],
+    [{ ok: true }, /Couldn’t load vacations/],
+    [{ ok: true, vacations: [{ name: 'x' }] }, /Couldn’t load vacations/],
+    ['network', /Couldn’t load vacations Check your connection and try again\./],
   ]) {
     const page = withHari();
-    page.openVacationsClick();
-    if (answer === 'network') page.fail();
-    else page.succeed(answer);
-    assert.match(dialogText(page), pattern);
-    assert.doesNotMatch(page.vacationDialog.innerHTML, /secret/);
-    page.vacationClick('retry-vacations');
-    assert.deepEqual(page.calls.slice(-1), ['listVacations']);
-    assert.match(dialogText(page), /Loading…/);
+    if (answer === 'network') page.failCall(1);
+    else page.succeedCall(1, answer);
+    assert.match(panelText(page), pattern);
+    assert.match(textOf(page.awaySlot.innerHTML), /Couldn’t load vacations\. Try again/, 'the schedule says so too');
+    assert.doesNotMatch(page.panels.vacation.innerHTML + page.awaySlot.innerHTML, /secret|DATABASE/);
+    assert.match(textOf(page.app.innerHTML), /Current turn Pending Hari/, 'the schedule still works');
+
+    page.panelClick('retry-vacations');
+    assert.deepEqual(page.calls, [...LOADED, 'listVacations']);
+    assert.match(panelText(page), /Loading vacations…/);
+    page.clickApp('retry-vacations');
+    assert.deepEqual(page.calls.slice(-1), ['listVacations'], 'Try again works from "Who’s away" too');
   }
 });
 
-test('plan and cancel buttons follow the picked roommate, and only offer your own cancellable vacations', () => {
-  const list = vacationList(vacationItem('Hari'), vacationItem('Jijo'), vacationItem('Hari', { vacation_id: 'v-used', cancellable: false }));
-  const picked = openedVacations(list);
-  assert.match(dialogText(picked), /Plan a vacation for Hari/);
-  assert.deepEqual([...picked.vacationDialog.innerHTML.matchAll(/data-action="cancel-vacation" data-vacation-id="([^"]*)"/g)].map((m) => m[1]), ['v-Hari']);
+test('a schedule error still loads the vacations, and the tab works on its own', () => {
+  const page = loadFrontend({ as: HARI });
+  page.fail();
+  assert.deepEqual(page.calls, LOADED);
+  page.succeedCall(1, vacationList(vacationItem('Jijo')));
+  assert.match(panelText(page), /Upcoming Jijo/);
+  assert.doesNotMatch(panelText(page), /Pick your name/);
+  assert.doesNotMatch(page.panels.vacation.innerHTML, /plan-vacation/, 'until the server has said who is signed in, nothing can be planned');
+});
 
-  const nobody = openedVacations(list, new Map());
-  assert.doesNotMatch(nobody.vacationDialog.innerHTML, /plan-vacation|cancel-vacation/);
-  assert.match(dialogText(nobody), /Pick your name on the main screen to plan or cancel a vacation\./);
-  nobody.vacationClick('plan-vacation');
-  nobody.vacationClick('cancel-vacation', { 'data-vacation-id': 'v-Hari' });
-  assert.deepEqual(nobody.calls, ['getRotationSchedule', 'listVacations'], 'without a pick nothing can start');
+test('Plan vacation is offered to every signed-in roommate', () => {
+  for (const as of ['Hari', 'Jijo']) {
+    const page = loadedVacations(vacationList(), as);
+    assert.deepEqual(page.panels.vacation.innerHTML.match(/<button[^>]*>/g), ['<button class="button" type="button" data-action="plan-vacation">']);
+    page.tabClick('vacation');
+    page.panelClick('plan-vacation');
+    assert.equal(page.vacationDialog.open, true);
+    assert.match(dialogText(page), new RegExp('Plan a vacation for ' + as));
+  }
+});
+
+test('only your own vacation offers actions: Cancel when allowed, Edit dates while upcoming or away, and I’m back while away', () => {
+  const list = vacationList(
+    vacationItem('Hari'),
+    vacationItem('Hari', { vacation_id: 'v-used', cancellable: false }),
+    vacationItem('Hari', { vacation_id: 'v-away', state: 'away', cancellable: false }),
+    vacationItem('Hari', { vacation_id: 'v-back', state: 'returned', cancellable: false }),
+    vacationItem('Hari', { vacation_id: null, state: 'upcoming', cancellable: false }),
+    vacationItem('Jijo'),
+    vacationItem('Jijo', { vacation_id: 'v-jijo-away', state: 'away', cancellable: false })
+  );
+  const page = loadedVacations(list);
+  const html = page.panels.vacation.innerHTML;
+  const actions = [...html.matchAll(/data-action="(cancel-vacation|edit-vacation|end-vacation)" data-vacation-id="([^"]*)"/g)].map((m) => [m[1], m[2]]);
+  assert.deepEqual(actions, [
+    ['edit-vacation', 'v-away'], ['end-vacation', 'v-away'],
+    ['cancel-vacation', 'v-Hari'], ['edit-vacation', 'v-Hari'],
+    ['edit-vacation', 'v-used'],
+  ], 'nothing for returned vacations, hand-typed rows without an ID, or anyone else');
+  assert.doesNotMatch(html, / disabled/);
+
+  page.panelClick('edit-vacation', { 'data-vacation-id': 'v-Jijo' });
+  page.panelClick('end-vacation', { 'data-vacation-id': 'v-Hari' });
+  page.panelClick('edit-vacation', { 'data-vacation-id': 'v-back' });
+  assert.equal(page.vacationDialog.open, false, 'foreign, not-started and finished vacations open nothing');
+  assert.deepEqual(page.calls, LOADED);
+
+  const other = loadedVacations(list, 'Arun');
+  assert.doesNotMatch(other.panels.vacation.innerHTML, /cancel-vacation|edit-vacation|end-vacation/, 'someone else sees no actions on these');
+});
+
+test('Edit dates opens a form filled with the Berlin dates; a started vacation keeps its first day away', () => {
+  // 25 Oct is the October clock change: midnight Berlin is 22:00Z before it and 23:00Z after.
+  const upcoming = vacationItem('Hari', { start_date: '2026-10-23T22:00:00.000Z', return_date: '2026-10-26T23:00:00.000Z' });
+  const page = loadedVacations(vacationList(upcoming));
+  page.panelClick('edit-vacation', { 'data-vacation-id': 'v-Hari' });
+  assert.equal(page.vacationDialog.open, true);
+  const html = page.vacationDialog.innerHTML;
+  assert.match(textOf(html), /^Change your vacation dates /);
+  assert.ok(html.includes(`id="vacation-start" type="date" min="${berlinToday()}" value="2026-10-24">`), 'Saturday 24 Oct');
+  assert.ok(html.includes(`id="vacation-return" type="date" min="${berlinToday()}" value="2026-10-27">`), 'Tuesday 27 Oct');
+  assert.match(textOf(html), /If a change would affect them, ask the app owner\./);
+  assert.doesNotMatch(textOf(html), /isn’t a login|name picked/);
+  assert.deepEqual(page.calls, LOADED, 'opening the form asks the server nothing');
+
+  const away = loadedVacations(vacationList(vacationItem('Hari', { state: 'away', cancellable: false })));
+  away.panelClick('edit-vacation', { 'data-vacation-id': 'v-Hari' });
+  assert.match(away.vacationDialog.innerHTML, /id="vacation-start" type="date" min="[^"]*" value="2026-01-09" disabled aria-describedby="vacation-start-note">/);
+  assert.match(textOf(away.vacationDialog.innerHTML), /Your vacation has started, so the first day away stays\./);
+});
+
+test('saving an edit sends the new dates and the dates the page showed, once, then refreshes without blanking the schedule', () => {
+  const page = loadedVacations(vacationList(vacationItem('Hari')));
+  const schedulePage = page.app.innerHTML;
+  page.panelClick('edit-vacation', { 'data-vacation-id': 'v-Hari' });
+  page.setDates('2026-01-10', '2026-01-14');
+  page.vacationClick('save-edit');
+  page.vacationClick('save-edit');
+  page.vacationClick('close-vacation');
+  assert.deepEqual(page.calls, [...LOADED, 'updateVacation']);
+  assert.deepEqual(plain(page.callArguments[2]), [{
+    token: 'token-Hari', vacation_id: 'v-Hari', start_date: '2026-01-10', return_date: '2026-01-14',
+    seen_start: '2026-01-08T23:00:00.000Z', seen_return: '2026-01-11T23:00:00.000Z',
+  }]);
+  assert.match(dialogText(page), /Saving…/);
+  assert.equal(page.vacationDialog.open, true, 'the dialog stays while saving');
+
+  page.succeedCall(2, { ok: true, changed: true });
+  assert.equal(page.vacationDialog.open, false);
+  assert.deepEqual(page.calls.slice(3), ['getRotationSchedule', 'listVacations']);
+  assert.equal(page.app.innerHTML, schedulePage, 'the schedule stays on screen while it refreshes');
+  assert.doesNotMatch(page.app.innerHTML, /Loading schedule/);
+  assert.match(panelText(page), /Vacation dates updated\./);
+
+  page.succeedCall(3, schedule({ current: turn('Jijo', 1) }));
+  assert.match(textOf(page.app.innerHTML), /Current turn Pending Jijo/);
+  assert.equal(page.panels.schedule.attributes['data-settled'], 'true', 'updated in place, without replaying the entrance');
+  page.succeedCall(4, vacationList(vacationItem('Hari', { start_date: '2026-01-09T23:00:00.000Z', return_date: '2026-01-13T23:00:00.000Z' })));
+  assert.match(panelText(page), /First day away Sat 10 Jan First day back Wed 14 Jan/);
+
+  const same = loadedVacations(vacationList(vacationItem('Hari')));
+  same.panelClick('edit-vacation', { 'data-vacation-id': 'v-Hari' });
+  same.setDates('2026-01-09', '2026-01-12');
+  same.vacationClick('save-edit');
+  same.succeedCall(2, { ok: true, changed: false });
+  assert.match(panelText(same), /Nothing changed: those are already the dates\./);
+});
+
+test('a quiet refresh that fails keeps the current schedule on screen', () => {
+  const page = loadedVacations(vacationList(vacationItem('Hari')));
+  const schedulePage = page.app.innerHTML;
+  page.panelClick('edit-vacation', { 'data-vacation-id': 'v-Hari' });
+  page.setDates('2026-01-10', '2026-01-14');
+  page.vacationClick('save-edit');
+  page.succeedCall(2, { ok: true, changed: true });
+  page.failCall(3);
+  assert.equal(page.app.innerHTML, schedulePage);
+  page.succeedCall(3, { ok: false, error: { code: 'INTERNAL_ERROR' } });
+  assert.equal(page.app.innerHTML, schedulePage, 'an error answer does not replace a good schedule either');
+});
+
+test('edit mistakes are caught before asking the server, and refusals keep the form with a plain reason', () => {
+  const page = loadedVacations(vacationList(vacationItem('Hari')));
+  page.panelClick('edit-vacation', { 'data-vacation-id': 'v-Hari' });
+  page.setDates('2026-01-12', '2026-01-12');
+  page.vacationClick('save-edit');
+  assert.match(page.vacationDialog.innerHTML, /<p class="form-error" role="alert">The first day back must be after the first day away\.<\/p>/);
+  page.setDates('', '2026-01-12');
+  page.vacationClick('save-edit');
+  assert.match(dialogText(page), /Pick both dates\./);
+  assert.deepEqual(page.calls, LOADED);
+
+  const codes = {
+    VACATION_TURN_CONFLICT: /would affect the current cleaning turn.*Ask the app owner/,
+    VACATION_SKIP_RECORDED: /already skipped for this vacation.*Ask the app owner/,
+    VACATION_START_LOCKED: /keeps its first day away/,
+    VACATION_BACK_IN_PAST: /first day back can’t be in the past/,
+    VACATION_IN_PAST: /can’t be in the past/,
+    VACATION_OVERLAP: /already a vacation on those dates/,
+    VACATION_DATES_INVALID: /real dates/,
+    BUSY: /Someone else is saving/,
+    SOMETHING_NEW: /Something went wrong, so nothing was saved/,
+  };
+  for (const [code, pattern] of Object.entries(codes)) {
+    const edit = loadedVacations(vacationList(vacationItem('Hari')));
+    edit.panelClick('edit-vacation', { 'data-vacation-id': 'v-Hari' });
+    edit.setDates('2026-01-10', '2026-01-14');
+    edit.vacationClick('save-edit');
+    edit.succeedCall(2, { ok: false, error: { code, message: 'Server detail 1AbC-secret' } });
+    assert.equal(edit.vacationDialog.open, true, code);
+    assert.match(dialogText(edit), pattern, code);
+    assert.ok(edit.vacationDialog.innerHTML.includes('value="2026-01-10"') && edit.vacationDialog.innerHTML.includes('value="2026-01-14"'), `${code}: the typed dates stay`);
+    assert.doesNotMatch(edit.vacationDialog.innerHTML, /secret|Server detail/, code);
+    assert.deepEqual(edit.calls, [...LOADED, 'updateVacation'], `${code}: nothing is reloaded`);
+  }
+});
+
+test('a stale edit closes the form and shows the latest list with the reason', () => {
+  for (const code of ['VACATION_CHANGED', 'VACATION_NOT_FOUND', 'VACATION_ENDED', 'NOT_YOUR_VACATION']) {
+    const page = loadedVacations(vacationList(vacationItem('Hari')));
+    page.panelClick('edit-vacation', { 'data-vacation-id': 'v-Hari' });
+    page.setDates('2026-01-10', '2026-01-14');
+    page.vacationClick('save-edit');
+    page.succeedCall(2, { ok: false, error: { code } });
+    assert.equal(page.vacationDialog.open, false, code);
+    assert.deepEqual(page.calls.slice(3), ['listVacations'], `${code}: only the list is reloaded`);
+    page.succeedCall(3, vacationList(vacationItem('Hari')));
+    assert.match(page.panels.vacation.innerHTML, /<p class="notice notice-error" role="alert">/, code);
+  }
+  const page = loadedVacations(vacationList(vacationItem('Hari')));
+  page.panelClick('edit-vacation', { 'data-vacation-id': 'v-Hari' });
+  page.setDates('2026-01-10', '2026-01-14');
+  page.vacationClick('save-edit');
+  page.failCall(2);
+  assert.match(panelText(page), /We couldn’t confirm that it saved/);
+});
+
+test('I’m back asks first, sends the vacation and the dates the page showed once, then refreshes both views', () => {
+  const away = vacationItem('Hari', { state: 'away', cancellable: false });
+  const page = loadedVacations(vacationList(away));
+  page.panelClick('end-vacation', { 'data-vacation-id': 'v-Hari' });
+  assert.equal(page.vacationDialog.open, true);
+  assert.match(dialogText(page), /Back already\? Today, \w{3} \d{1,2} \w{3}, becomes your first day back\. Turns from today on count for you again\./);
+  assert.match(page.vacationDialog.innerHTML, /data-action="close-vacation" autofocus>Not yet</, 'the safe choice has focus');
+  page.vacationClick('close-vacation');
+  assert.deepEqual(page.calls, LOADED, 'Not yet sends nothing');
+
+  page.panelClick('end-vacation', { 'data-vacation-id': 'v-Hari' });
+  page.vacationClick('confirm-end-vacation');
+  page.vacationClick('confirm-end-vacation');
+  assert.deepEqual(page.calls, [...LOADED, 'endVacation']);
+  assert.deepEqual(plain(page.callArguments[2]), [{ token: 'token-Hari', vacation_id: 'v-Hari', seen_start: away.start_date, seen_return: away.return_date }]);
+  page.succeedCall(2, { ok: true, changed: true });
+  assert.equal(page.vacationDialog.open, false);
+  assert.deepEqual(page.calls.slice(3), ['getRotationSchedule', 'listVacations']);
+  assert.doesNotMatch(page.app.innerHTML, /Loading schedule/);
+  assert.match(panelText(page), /Welcome back! Today is your first day back\./);
+
+  // A turn that is already processed can't be changed: the reason stays in the dialog, and nothing is reloaded.
+  for (const [code, pattern] of [
+    ['VACATION_TURN_CONFLICT', /would affect the current cleaning turn.*Ask the app owner/],
+    ['VACATION_SKIP_RECORDED', /already skipped for this vacation.*Ask the app owner/],
+    ['VACATION_JUST_STARTED', /started today/],
+    ['BUSY', /Someone else is saving/],
+  ]) {
+    const refused = loadedVacations(vacationList(away));
+    refused.panelClick('end-vacation', { 'data-vacation-id': 'v-Hari' });
+    refused.vacationClick('confirm-end-vacation');
+    refused.succeedCall(2, { ok: false, error: { code, message: 'secret' } });
+    assert.equal(refused.vacationDialog.open, true, code);
+    assert.match(dialogText(refused), new RegExp('Your vacation wasn’t changed .*' + pattern.source), code);
+    assert.match(refused.vacationDialog.innerHTML, /<p class="form-error" role="alert">/, code);
+    assert.doesNotMatch(refused.vacationDialog.innerHTML, /secret/, code);
+    assert.deepEqual(refused.calls, [...LOADED, 'endVacation'], `${code}: nothing is reloaded`);
+    refused.vacationClick('close-vacation');
+    assert.equal(refused.vacationDialog.open, false, code);
+  }
+  // A page that is out of date closes the dialog and shows the latest list.
+  const stale = loadedVacations(vacationList(away));
+  stale.panelClick('end-vacation', { 'data-vacation-id': 'v-Hari' });
+  stale.vacationClick('confirm-end-vacation');
+  stale.succeedCall(2, { ok: false, error: { code: 'VACATION_CHANGED' } });
+  assert.equal(stale.vacationDialog.open, false);
+  stale.succeedCall(3, vacationList(away));
+  assert.match(panelText(stale), /changed since you loaded it/);
 });
 
 test('the form asks for the first day away and the first day back, with today as the earliest date', () => {
-  const page = openedVacations();
-  page.vacationClick('plan-vacation');
+  const page = loadedVacations();
+  page.panelClick('plan-vacation');
+  assert.equal(page.vacationDialog.open, true);
   const html = page.vacationDialog.innerHTML;
   assert.match(textOf(html), /Plan a vacation for Hari/);
   assert.match(html, /<label for="vacation-start">First day away<\/label>/);
   assert.match(html, /<label for="vacation-return">First day back<\/label>/);
   assert.equal([...html.matchAll(/type="date" min="([^"]*)"/g)].map((m) => m[1]).join(), `${berlinToday()},${berlinToday()}`);
-  assert.match(textOf(html), /Trust-based for now/);
+  assert.doesNotMatch(textOf(html), /isn’t a login|name picked/);
   assert.match(textOf(html), /The first day back is the first day you can clean again\./);
-  assert.deepEqual(page.calls, ['getRotationSchedule', 'listVacations'], 'opening the form asks the server nothing');
+  assert.deepEqual(page.calls, LOADED, 'opening the form asks the server nothing');
 });
 
 test('form mistakes are caught before asking the server, and the typed dates are kept', () => {
-  const page = openedVacations();
-  page.vacationClick('plan-vacation');
+  const page = loadedVacations();
+  page.panelClick('plan-vacation');
   for (const [start, back, message] of [
     ['', '2026-01-12', 'Pick both dates.'],
     ['2026-01-09', '', 'Pick both dates.'],
@@ -1204,29 +1596,32 @@ test('form mistakes are caught before asking the server, and the typed dates are
     assert.match(page.vacationDialog.innerHTML, new RegExp(`<p class="form-error" role="alert">${message.replace(/[.]/g, '\\.')}</p>`));
     assert.ok(page.vacationDialog.innerHTML.includes(`id="vacation-start" type="date" min="${berlinToday()}" value="${start}"`), 'the typed date is kept');
   }
-  assert.deepEqual(page.calls, ['getRotationSchedule', 'listVacations']);
+  assert.deepEqual(page.calls, LOADED);
 });
 
-test('saving sends exactly the picked roommate and two dates, ignores double clicks, then refreshes the schedule and the list', () => {
-  const page = openedVacations();
-  page.vacationClick('plan-vacation');
+test('saving sends exactly the picked roommate and two dates, ignores double clicks, then closes and refreshes both views', () => {
+  const page = loadedVacations();
+  page.panelClick('plan-vacation');
   page.setDates('2026-01-09', '2026-01-12');
   page.vacationClick('save-vacation');
   page.vacationClick('save-vacation');
-  page.vacationClick('save-vacation');
-  assert.deepEqual(page.calls, ['getRotationSchedule', 'listVacations', 'saveVacation'], 'one request however often it is clicked');
-  assert.deepEqual(plain(page.callArguments[2]), [{ roommate_id: 'id-Hari', start_date: '2026-01-09', return_date: '2026-01-12' }]);
+  page.vacationClick('close-vacation');
+  assert.deepEqual(page.calls, [...LOADED, 'saveVacation'], 'one request however often it is clicked');
+  assert.deepEqual(plain(page.callArguments[2]), [{ token: 'token-Hari', start_date: '2026-01-09', return_date: '2026-01-12' }]);
   assert.match(dialogText(page), /Saving…/);
+  assert.equal(page.vacationDialog.open, true, 'the dialog stays while saving');
   assert.doesNotMatch(page.vacationDialog.innerHTML, /<button/);
 
   page.succeedCall(2, SAVED);
+  assert.equal(page.vacationDialog.open, false);
   assert.deepEqual(page.calls.slice(3), ['getRotationSchedule', 'listVacations'], 'the schedule and the list are reloaded');
+  assert.match(panelText(page), /Vacation saved\. Your turns while you are away are skipped\./, 'the old list stays visible meanwhile');
   page.succeedCall(3, schedule({ current: turn('Jijo', 1) }));
   assert.match(textOf(page.app.innerHTML), /Current turn Pending Jijo/);
   page.succeedCall(4, vacationList(vacationItem('Hari')));
-  assert.match(page.vacationDialog.innerHTML, /<p class="notice notice-success" role="status">/);
-  assert.match(dialogText(page), /Vacation saved\. Your turns while you are away are skipped\./);
-  assert.match(dialogText(page), /Hari Upcoming Fri 9 Jan – back Mon 12 Jan/);
+  assert.match(page.panels.vacation.innerHTML, /<p class="notice notice-success" role="status">/);
+  assert.match(panelText(page), /Upcoming Hari Upcoming First day away Fri 9 Jan First day back Mon 12 Jan/);
+  assert.deepEqual(page.calls.slice(5), [], 'nothing else is loaded');
 });
 
 test('every refusal is explained in plain words, nothing leaks, and the typed dates stay in the form', () => {
@@ -1236,15 +1631,16 @@ test('every refusal is explained in plain words, nothing leaks, and the typed da
     BUSY: /Someone else is saving/, WRITE_FAILED: /Nothing was recorded/, INVALID_REQUEST: /Something went wrong, so nothing was saved/, SOMETHING_NEW: /Something went wrong, so nothing was saved/,
   };
   for (const [code, pattern] of Object.entries(codes)) {
-    const page = openedVacations();
-    page.vacationClick('plan-vacation');
+    const page = loadedVacations();
+    page.panelClick('plan-vacation');
     page.setDates('2026-01-09', '2026-01-12');
     page.vacationClick('save-vacation');
     page.succeedCall(2, { ok: false, error: { code, message: 'Server detail 1AbC-secret' } });
-    assert.match(textOf(page.vacationDialog.innerHTML), pattern, code);
+    assert.equal(page.vacationDialog.open, true, code);
+    assert.match(dialogText(page), pattern, code);
     assert.doesNotMatch(page.vacationDialog.innerHTML, /secret|Server detail/, code);
     assert.ok(page.vacationDialog.innerHTML.includes('value="2026-01-09"') && page.vacationDialog.innerHTML.includes('value="2026-01-12"'), code);
-    assert.deepEqual(page.calls, ['getRotationSchedule', 'listVacations', 'saveVacation'], `${code}: nothing was saved, so nothing is reloaded`);
+    assert.deepEqual(page.calls, [...LOADED, 'saveVacation'], `${code}: nothing was saved, so nothing is reloaded`);
     page.vacationClick('save-vacation');
     assert.equal(page.calls.filter((c) => c === 'saveVacation').length, 2, 'the form can be fixed and sent again');
   }
@@ -1252,36 +1648,38 @@ test('every refusal is explained in plain words, nothing leaks, and the typed da
 
 test('if the answer never arrives or makes no sense, the list is reloaded with a note that the save is unconfirmed', () => {
   for (const answer of ['network', undefined, null, {}, 'ok']) {
-    const page = openedVacations();
-    page.vacationClick('plan-vacation');
+    const page = loadedVacations();
+    page.panelClick('plan-vacation');
     page.setDates('2026-01-09', '2026-01-12');
     page.vacationClick('save-vacation');
     if (answer === 'network') page.failCall(2);
     else page.succeedCall(2, answer);
+    assert.equal(page.vacationDialog.open, false);
     assert.deepEqual(page.calls.slice(3), ['listVacations'], 'only the list is checked');
     page.succeedCall(3, vacationList());
-    assert.match(page.vacationDialog.innerHTML, /<p class="notice notice-info" role="status">We couldn’t confirm that it saved\. Check the list before trying again\.<\/p>/);
+    assert.match(page.panels.vacation.innerHTML, /<p class="notice notice-info" role="status">We couldn’t confirm that it saved\. Check the list before trying again\.<\/p>/);
   }
 });
 
 test('cancelling asks first, sends exactly the roommate and vacation once, then refreshes', () => {
-  const page = openedVacations(vacationList(vacationItem('Hari')));
-  page.vacationClick('cancel-vacation', { 'data-vacation-id': 'v-Hari' });
+  const page = loadedVacations(vacationList(vacationItem('Hari')));
+  page.panelClick('cancel-vacation', { 'data-vacation-id': 'v-Hari' });
+  assert.equal(page.vacationDialog.open, true);
   assert.match(dialogText(page), /Cancel this vacation\? Hari: Fri 9 Jan – back Mon 12 Jan\. Your turns in that time will count again\./);
-  assert.match(page.vacationDialog.innerHTML, /data-action="back-to-vacations" autofocus>Keep it</, 'the safe choice has focus');
-  page.vacationClick('back-to-vacations');
-  assert.match(dialogText(page), /Hari Upcoming/);
-  assert.deepEqual(page.calls, ['getRotationSchedule', 'listVacations'], 'keeping it asks the server nothing');
+  assert.match(page.vacationDialog.innerHTML, /data-action="close-vacation" autofocus>Keep it</, 'the safe choice has focus');
+  page.vacationClick('close-vacation');
+  assert.equal(page.vacationDialog.open, false);
+  assert.deepEqual(page.calls, LOADED, 'keeping it asks the server nothing');
 
-  page.vacationClick('cancel-vacation', { 'data-vacation-id': 'v-Hari' });
+  page.panelClick('cancel-vacation', { 'data-vacation-id': 'v-Hari' });
   page.vacationClick('confirm-cancel-vacation');
   page.vacationClick('confirm-cancel-vacation');
   assert.deepEqual(page.calls.slice(2), ['cancelVacation']);
-  assert.deepEqual(plain(page.callArguments[2]), [{ roommate_id: 'id-Hari', vacation_id: 'v-Hari' }]);
+  assert.deepEqual(plain(page.callArguments[2]), [{ token: 'token-Hari', vacation_id: 'v-Hari' }]);
   page.succeedCall(2, { ok: true });
   assert.deepEqual(page.calls.slice(3), ['getRotationSchedule', 'listVacations']);
   page.succeedCall(4, vacationList());
-  assert.match(dialogText(page), /Vacation cancelled\..*No vacations planned\./);
+  assert.match(panelText(page), /Vacation cancelled\..*Everyone’s home/);
 });
 
 test('a cancel that is refused or unconfirmed reloads the list, with the reason in plain words', () => {
@@ -1289,49 +1687,50 @@ test('a cancel that is refused or unconfirmed reloads the list, with the reason 
     VACATION_IN_USE: /already skipped a turn/, VACATION_STARTED: /has started/, NOT_YOUR_VACATION: /belongs to someone else/, VACATION_NOT_FOUND: /isn’t there any more/, WRITE_FAILED: /Nothing was recorded/,
   };
   for (const [code, pattern] of Object.entries(reasons)) {
-    const page = openedVacations(vacationList(vacationItem('Hari')));
-    page.vacationClick('cancel-vacation', { 'data-vacation-id': 'v-Hari' });
+    const page = loadedVacations(vacationList(vacationItem('Hari')));
+    page.panelClick('cancel-vacation', { 'data-vacation-id': 'v-Hari' });
     page.vacationClick('confirm-cancel-vacation');
     page.succeedCall(2, { ok: false, error: { code, message: 'Server detail secret' } });
+    assert.equal(page.vacationDialog.open, false, code);
     assert.deepEqual(page.calls.slice(3), ['listVacations'], code);
     page.succeedCall(3, vacationList(vacationItem('Hari')));
-    assert.match(page.vacationDialog.innerHTML, /<p class="notice notice-error" role="alert">/, code);
-    assert.match(dialogText(page), pattern, code);
-    assert.doesNotMatch(page.vacationDialog.innerHTML, /secret/, code);
+    assert.match(page.panels.vacation.innerHTML, /<p class="notice notice-error" role="alert">/, code);
+    assert.match(panelText(page), pattern, code);
+    assert.doesNotMatch(page.panels.vacation.innerHTML, /secret/, code);
   }
-  const page = openedVacations(vacationList(vacationItem('Hari')));
-  page.vacationClick('cancel-vacation', { 'data-vacation-id': 'v-Hari' });
+  const page = loadedVacations(vacationList(vacationItem('Hari')));
+  page.panelClick('cancel-vacation', { 'data-vacation-id': 'v-Hari' });
   page.vacationClick('confirm-cancel-vacation');
   page.failCall(2);
   page.succeedCall(3, vacationList(vacationItem('Hari')));
-  assert.match(page.vacationDialog.innerHTML, /notice notice-info/);
+  assert.match(page.panels.vacation.innerHTML, /notice notice-info/);
 });
 
 test('names and ids in the vacation views are escaped, and someone else\'s vacation cannot be cancelled from the page', () => {
-  const hostile = vacationItem('Hari', { name: '<img src=x onerror=alert(1)>', vacation_id: 'v"><b>x' });
-  const page = openedVacations(vacationList(hostile, vacationItem('Jijo')));
-  assert.doesNotMatch(page.vacationDialog.innerHTML, /<img|<b>/);
-  assert.match(page.vacationDialog.innerHTML, /&lt;img src=x onerror=alert\(1\)&gt;/);
-  assert.match(page.vacationDialog.innerHTML, /data-vacation-id="v&quot;&gt;&lt;b&gt;x"/);
+  const hostile = vacationItem('Hari', { name: '<img src=x onerror=alert(1)>', vacation_id: 'v"><b>x', state: 'away' });
+  const page = loadedVacations(vacationList(hostile, vacationItem('Hari', { name: '<b>bold</b>' }), vacationItem('Jijo')));
+  for (const html of [page.panels.vacation.innerHTML, page.awaySlot.innerHTML]) {
+    assert.doesNotMatch(html, /<img|<b>/);
+    assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
+  }
+  assert.match(page.panels.vacation.innerHTML, /data-vacation-id="v-Hari"/);
 
-  page.vacationClick('cancel-vacation', { 'data-vacation-id': 'v-Jijo' });
-  assert.deepEqual(page.calls, ['getRotationSchedule', 'listVacations'], 'Jijo\'s vacation is not Hari\'s to cancel');
-  assert.match(dialogText(page), /Hari Upcoming|<img/);
+  page.panelClick('cancel-vacation', { 'data-vacation-id': 'v-Jijo' });
+  assert.deepEqual(page.calls, LOADED, 'Jijo\'s vacation is not Hari\'s to cancel');
 });
 
 test('closing the dialog drops drafts and pending confirmations', () => {
-  const page = openedVacations(vacationList(vacationItem('Hari')));
-  page.vacationClick('plan-vacation');
+  const page = loadedVacations(vacationList(vacationItem('Hari')));
+  page.panelClick('plan-vacation');
   page.setDates('2026-01-09', '2026-01-12');
   page.vacationClick('close-vacation');
   assert.equal(page.vacationDialog.open, false);
-  page.vacationClick('plan-vacation');
-  assert.ok(page.vacationDialog.innerHTML.includes('id="vacation-start" type="date" min="'), 'the form opens');
+  page.panelClick('plan-vacation');
   assert.ok(page.vacationDialog.innerHTML.includes(`min="${berlinToday()}" value=""`), 'the old dates are gone');
 
   page.vacationClick('close-vacation');
   page.vacationClick('confirm-cancel-vacation');
-  assert.deepEqual(page.calls, ['getRotationSchedule', 'listVacations']);
+  assert.deepEqual(page.calls, LOADED);
 });
 
 // App shell: navigation, Beta notice, profile entry, work-in-progress pages
@@ -1357,11 +1756,11 @@ test('tabs switch sections, mark the current one, and never ask the server for a
     assert.deepEqual(page.shown(), [tab]);
     assert.deepEqual(page.current(), [tab]);
   }
-  assert.deepEqual(page.calls, ['getRotationSchedule'], 'moving around reloads nothing');
+  assert.deepEqual(page.calls, LOADED, 'moving around reloads nothing');
   page.tabClick('swaps');
   page.tabsClickElsewhere();
   assert.deepEqual(page.shown(), ['swaps'], 'a click that is not on a tab changes nothing');
-  assert.deepEqual(page.calls, ['getRotationSchedule']);
+  assert.deepEqual(page.calls, LOADED);
 });
 
 test('the schedule and Mark as cleaned work exactly as before after visiting other tabs', () => {
@@ -1373,7 +1772,8 @@ test('the schedule and Mark as cleaned work exactly as before after visiting oth
   page.clickMark();
   assert.equal(page.dialog.open, true);
   page.dialogClick('confirm-clean');
-  assert.deepEqual(plain(page.callArguments[1]), [{ roommate_id: 'id-Hari', rotation_id: 'slot-Hari', due_at: turn('Hari', 0).due_at }]);
+  assert.deepEqual(page.calls, [...LOADED, 'markCleaned']);
+  assert.deepEqual(plain(page.callArguments[2]), [{ token: 'token-Hari', rotation_id: 'slot-Hari', due_at: turn('Hari', 0).due_at }]);
 });
 
 test('a schedule that arrives while another tab is open is waiting there, and the tab bar survives errors', () => {
@@ -1394,9 +1794,8 @@ test('a schedule that arrives while another tab is open is waiting there, and th
 
 test('Vacation is a real section, and Swaps and History are honest "Work in progress" pages', () => {
   const page = withHari();
-  assert.match(textOf(page.panels.vacation.innerHTML), /^Vacation Vacations /);
-  page.openVacationsClick();
-  assert.equal(page.vacationDialog.open, true, 'vacations work from their own tab');
+  assert.match(textOf(page.panels.vacation.innerHTML), /^Vacations /);
+  assert.doesNotMatch(page.panels.vacation.innerHTML, /open-vacations/, 'the overview is on the tab, not behind a dialog');
 
   for (const [tab, title] of [['swaps', 'Swaps'], ['history', 'History']]) {
     const html = page.panels[tab].innerHTML;
@@ -1405,7 +1804,7 @@ test('Vacation is a real section, and Swaps and History are honest "Work in prog
     assert.match(text, /Nothing to do here yet\.$/);
     assert.doesNotMatch(html, /<(button|input|select|textarea|form|a )|data-action|onclick/, `${tab}: nothing to click or submit`);
   }
-  assert.deepEqual(page.calls, ['getRotationSchedule', 'listVacations'], 'unfinished sections never touch the server');
+  assert.deepEqual(page.calls, LOADED, 'unfinished sections never touch the server');
 });
 
 test('a Beta badge sits next to the name, and the first visit gets a dismissible notice', () => {
@@ -1434,86 +1833,54 @@ test('a dismissed notice stays away on later visits, and still works when browse
   const other = loadFrontend({ storage: new Map([[BETA_KEY, 'something else']]) });
   assert.equal(other.betaNotice.hidden, false, 'only a real dismissal counts');
 
+  // Without storage the session lasts for this visit only: sign in, then the notice shows and can be dismissed.
   const blocked = loadFrontend({ storageBlocked: true });
+  assert.equal(blocked.betaNotice.hidden, true, 'not on the sign-in screen');
+  blocked.authInputs['sign-in-username'].value = 'hari';
+  blocked.authInputs['sign-in-password'].value = 'a long enough passphrase';
+  blocked.authSubmit('sign-in');
+  blocked.succeed({ ok: true, session: { token: 'token-visit', expires_at: FAR_FUTURE }, viewer: viewerOf('Hari') });
+  assert.equal(blocked.signedIn(), true);
+  assert.deepEqual(blocked.callArguments[1], [{ token: 'token-visit' }], 'the session is kept in memory');
   assert.equal(blocked.betaNotice.hidden, false);
   blocked.betaClick('dismiss-beta');
   assert.equal(blocked.betaNotice.hidden, true, 'dismissed for this visit');
 });
 
-test('the profile entry says nobody is picked until someone is, and never claims a login', () => {
-  const page = loadFrontend();
-  assert.match(textOf(page.profileButton.innerHTML), /^Just looking No name picked$/);
-  assert.equal(page.profileButton.attributes['aria-label'], 'Profile: no name picked');
-
+test('the profile entry shows the signed-in name and role, as the server reports them', () => {
+  const page = loadFrontend({ as: 'Hari' });
+  assert.equal(page.profileButton.attributes['aria-label'], 'Profile');
   page.succeed(schedule());
-  assert.equal(page.profileButton.attributes['aria-label'], 'Profile: no name picked');
-  page.pick('id-Hari');
-  assert.match(textOf(page.profileButton.innerHTML), /Hari Not verified$/);
+  assert.match(textOf(page.profileButton.innerHTML), /^Hari Admin$/);
   assert.match(page.profileButton.innerHTML, /avatar avatar-sm tone-\d/);
-  assert.equal(page.profileButton.attributes['aria-label'], 'Profile: Hari, not verified');
-  page.pick('');
-  assert.match(textOf(page.profileButton.innerHTML), /Just looking No name picked$/);
+  assert.equal(page.profileButton.attributes['aria-label'], 'Profile: Hari, Admin');
+
+  const roommate = loadFrontend({ as: 'Jijo' });
+  roommate.succeed(schedule());
+  assert.match(textOf(roommate.profileButton.innerHTML), /^Jijo Roommate$/);
+  const odd = loadFrontend({ as: 'Arun' });
+  odd.succeed(schedule({ viewer: viewerOf('Arun', { role: 'SUPERUSER' }) }));
+  assert.match(textOf(odd.profileButton.innerHTML), /^Arun Roommate$/, 'an unknown role is shown as the least');
 });
 
-test('the profile entry follows a remembered pick, and drops one that is gone', () => {
-  const remembered = withHari();
-  assert.match(textOf(remembered.profileButton.innerHTML), /Hari Not verified$/);
-  assert.equal(remembered.profileButton.attributes['aria-label'], 'Profile: Hari, not verified');
-
-  const gone = loadFrontend({ storage: new Map([[ROOMMATE_KEY, 'id-Gone']]) });
-  gone.succeed(schedule());
-  assert.match(textOf(gone.profileButton.innerHTML), /Just looking No name picked$/);
-
-  const failed = loadFrontend({ storage: new Map(HARI) });
-  failed.fail();
-  assert.match(textOf(failed.profileButton.innerHTML), /Just looking No name picked$/, 'without the roommate list nothing can be confirmed');
-});
-
-test('the profile dialog explains the identity state honestly', () => {
-  const picked = withHari();
-  picked.openProfile();
-  assert.equal(picked.profileDialog.open, true);
-  assert.equal(
-    textOf(picked.profileDialog.innerHTML),
-    'Profile Viewing as Hari You picked this name from a list on this device. It isn’t a login and it isn’t verified: anyone with the link can pick any name. Change name Close'
-  );
-
-  const nobody = withHari(schedule(), new Map());
-  nobody.openProfile();
-  assert.match(textOf(nobody.profileDialog.innerHTML), /Just looking No name is picked\. Pick yours on the Schedule tab to get a personal greeting\. It isn’t a login and it isn’t verified\. Pick a name Close/);
-
-  const early = loadFrontend();
-  early.openProfile();
-  assert.match(textOf(early.profileDialog.innerHTML), /The roommate list hasn’t loaded yet\. Close$/);
-  assert.doesNotMatch(early.profileDialog.innerHTML, /change-name/);
-
-  for (const page of [picked, nobody, early]) {
-    const all = textOf(page.profileButton.innerHTML + page.profileDialog.innerHTML) + page.profileButton.attributes['aria-label'];
-    assert.doesNotMatch(all.replace(/isn’t a login and it isn’t verified|not verified/gi, ''), /log ?in|logged|sign(ed)? ?in|verified|authenticated|account|welcome back/i);
-  }
-});
-
-test('Change name returns to the Schedule tab and focuses the picker; Close just closes', () => {
-  const page = withHari();
-  page.tabClick('history');
+test('the profile dialog shows who is signed in and offers Sign out and Close', () => {
+  const page = loadFrontend({ as: 'Hari' });
+  page.succeed(schedule());
   page.openProfile();
+  assert.equal(page.profileDialog.open, true);
+  assert.equal(textOf(page.profileDialog.innerHTML), 'Profile Hari Admin · Signed in Signing out ends your session on all your devices. Sign out Close');
+  assert.match(page.profileDialog.innerHTML, /data-action="close-profile" autofocus/);
+  page.profileClick('something-else');
+  assert.equal(page.profileDialog.open, true);
   page.profileClick('close-profile');
   assert.equal(page.profileDialog.open, false);
-  assert.deepEqual(page.shown(), ['history']);
-
-  page.openProfile();
-  page.profileClick('change-name');
-  assert.equal(page.profileDialog.open, false);
-  assert.deepEqual(page.shown(), ['schedule']);
-  assert.equal(page.whoSelect.focused, 1);
-  page.profileClick('something-else');
-  assert.deepEqual(page.calls, ['getRotationSchedule'], 'the profile never calls the server');
+  assert.deepEqual(page.calls, LOADED, 'opening the profile never calls the server');
 });
 
 test('hostile roommate names are escaped in the profile entry and dialog', () => {
-  const hostile = [person('<img src=x onerror=alert(1)>', 'id-x'), person('Hari')];
-  const page = loadFrontend({ storage: new Map([[ROOMMATE_KEY, 'id-x']]) });
-  page.succeed(schedule({ roommates: hostile }));
+  const page = loadFrontend({ as: 'x' });
+  const hostile = { roommate_id: 'id-x', name: '<img src=x onerror=alert(1)>', role: 'ROOMMATE', must_change_password: false };
+  page.succeed(schedule({ viewer: hostile, roommates: [hostile, person('Hari')] }));
   page.openProfile();
   const html = page.profileButton.innerHTML + page.profileDialog.innerHTML;
   assert.doesNotMatch(html, /<img/);
@@ -1551,31 +1918,37 @@ test('a tap on the icon or label inside a button counts as a tap on the button',
   page.app.listeners.click({ target: inside(button('data-action', 'mark-cleaned')) });
   assert.equal(page.dialog.open, true, 'the emoji of Mark as cleaned');
 
-  const vacation = openedVacations(vacationList(vacationItem('Hari')));
+  const vacation = loadedVacations(vacationList(vacationItem('Hari')));
   const cancel = { getAttribute: (name) => ({ 'data-action': 'cancel-vacation', 'data-vacation-id': 'v-Hari' })[name] || null };
-  vacation.vacationDialog.listeners.click({ target: { getAttribute: () => null, closest: () => cancel } });
+  vacation.panels.vacation.listeners.click({ target: { getAttribute: () => null, closest: () => cancel } });
   assert.match(textOf(vacation.vacationDialog.innerHTML), /Cancel this vacation\?/, 'the label of Cancel vacation');
 });
 
-test('Schedule is fetched again only after it has gone stale, and never while saving', () => {
+test('Schedule and vacations are fetched again only after they have gone stale, and never while saving', () => {
   const page = withHari();
+  page.succeedCall(1, vacationList());
   page.tabClick('history');
   page.tabClick('schedule');
-  assert.deepEqual(page.calls, ['getRotationSchedule'], 'a recent schedule is kept');
+  page.tabClick('vacation');
+  assert.deepEqual(page.calls, LOADED, 'recent copies are kept');
 
   page.tabClick('history');
   page.view('Date.now = (real => () => real() + 6 * 60 * 1000)(Date.now)');
   page.tabClick('schedule');
-  assert.deepEqual(page.calls, ['getRotationSchedule', 'getRotationSchedule'], 'an old one is refreshed');
+  assert.deepEqual(page.calls, [...LOADED, 'getRotationSchedule'], 'an old schedule is refreshed');
   page.succeed(schedule());
+  page.tabClick('vacation');
+  assert.deepEqual(page.calls, [...LOADED, 'getRotationSchedule', 'listVacations'], 'an old vacation list is refreshed');
+  page.succeed(vacationList());
   page.tabClick('history');
   page.tabClick('schedule');
-  assert.equal(page.calls.length, 2, 'and then it is recent again');
+  page.tabClick('vacation');
+  assert.equal(page.calls.length, 4, 'and then both are recent again');
 
   const failed = loadFrontend();
   failed.fail();
   failed.view('Date.now = (real => () => real() + 6 * 60 * 1000)(Date.now)');
   failed.tabClick('history');
   failed.tabClick('schedule');
-  assert.deepEqual(failed.calls, ['getRotationSchedule'], 'a failed load keeps its Try again button instead');
+  assert.deepEqual(failed.calls, LOADED, 'a failed load keeps its Try again button instead');
 });

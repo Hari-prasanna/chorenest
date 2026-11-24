@@ -1,0 +1,44 @@
+<script>
+// The signed-in session on this device: the server-signed token and when it expires. The token is the only thing that
+// identifies the roommate to the server; the page never sends a roommate id. It is kept in localStorage so a reload
+// stays signed in (up to 14 days); if storage is blocked it lasts for this visit only.
+const SESSION_STORAGE_KEY = 'chorenest-session';
+const LEGACY_PICK_KEY = 'chorenest-roommate'; // the old, unverified "Who are you?" pick
+// Answers that end this device's session: back to the sign-in screen.
+const SESSION_END_CODES = ['UNAUTHENTICATED', 'TEMP_PASSWORD_EXPIRED'];
+let memorySession = null;
+
+function isUsableSession(session) {
+  return Boolean(session) && typeof session.token === 'string' && session.token.length > 0 && session.token.length <= 1024 &&
+    !isNaN(Date.parse(session.expires_at)) && Date.parse(session.expires_at) > Date.now();
+}
+
+function readSession() {
+  const raw = readStored(SESSION_STORAGE_KEY);
+  let session = memorySession;
+  if (raw) {
+    try {
+      session = JSON.parse(raw);
+    } catch (error) {
+      session = null;
+    }
+  }
+  return isUsableSession(session) ? { token: session.token, expires_at: session.expires_at } : null;
+}
+
+function saveSession(session) {
+  memorySession = { token: session.token, expires_at: session.expires_at };
+  writeStored(SESSION_STORAGE_KEY, JSON.stringify(memorySession));
+}
+
+function clearSession() {
+  memorySession = null;
+  writeStored(SESSION_STORAGE_KEY, null);
+}
+
+/** The token for a request, or '' (the server then answers UNAUTHENTICATED). */
+function sessionToken() {
+  const session = readSession();
+  return session ? session.token : '';
+}
+</script>

@@ -27,19 +27,20 @@
             <button type="button" data-choice="dark" aria-pressed="false">Dark</button>
             <button type="button" data-choice="system" aria-pressed="true">System</button>
           </div>
-          <button class="profile" id="profile-button" type="button" data-action="open-profile" aria-haspopup="dialog" aria-label="Profile: no name picked"></button>
+          <button class="profile" id="profile-button" type="button" aria-haspopup="dialog" aria-label="Profile" hidden></button>
         </div>
       </header>
-      <nav class="tabs" id="tabs" aria-label="Sections">
+      <section class="auth-screen" id="auth-screen" aria-live="polite"></section>
+      <nav class="tabs" id="tabs" aria-label="Sections" hidden>
         <button class="tab" type="button" data-tab="schedule" aria-current="page"><span class="tab-icon" aria-hidden="true">🧹</span><span>Schedule</span></button>
         <button class="tab" type="button" data-tab="vacation" aria-current="false"><span class="tab-icon" aria-hidden="true">🏖️</span><span>Vacation</span></button>
         <button class="tab" type="button" data-tab="swaps" aria-current="false"><span class="tab-icon" aria-hidden="true">🔄</span><span>Swaps</span></button>
         <button class="tab" type="button" data-tab="history" aria-current="false"><span class="tab-icon" aria-hidden="true">🕘</span><span>History</span></button>
       </nav>
       <aside class="beta-notice" id="beta-notice" aria-label="Beta notice" hidden></aside>
-      <main>
+      <main id="main-content" hidden>
         <div id="panel-schedule" data-settled="false">
-          <p class="tagline">Whose turn is it to clean?</p>
+          <h2 class="visually-hidden">Whose turn is it to clean?</h2>
           <div id="app" aria-live="polite" aria-busy="true"></div>
         </div>
         <div id="panel-vacation" hidden></div>
@@ -52,7 +53,8 @@
     <dialog id="vacation-dialog" class="dialog dialog-wide" aria-labelledby="vacation-title"></dialog>
     <?!= include_('frontend/ScheduleView') ?>
     <?!= include_('frontend/VacationView') ?>
-    <?!= include_('frontend/Identity') ?>
+    <?!= include_('frontend/Session') ?>
+    <?!= include_('frontend/LoginView') ?>
     <?!= include_('frontend/Shell') ?>
     <?!= include_('frontend/App') ?>
   </body>

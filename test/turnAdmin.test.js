@@ -5,6 +5,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { DEV_SPREADSHEET_ID, PROD_SPREADSHEET_ID, FIXTURES, FakeSpreadsheet, fixtureSheet, loadProject, plain } = require('./support/appsScript');
+const { asSignedIn } = require('./support/appsScript');
 
 const ALEX = FIXTURES.ROOMMATES[0].roommate_id;
 const SAM = FIXTURES.ROOMMATES[1].roommate_id;
@@ -46,7 +47,7 @@ test('records admin_resolved for the overdue turn with the reason, and the rotat
   const spreadsheet = database();
   const others = JSON.stringify(['ROOMMATES', 'ROTATION', 'SWAPS', 'VACATIONS'].map((n) => spreadsheet.getSheetByName(n).values));
   const project = editor(spreadsheet);
-  assert.equal(plain(project.get('getRotationSchedule')()).current.status, 'overdue');
+  assert.equal(plain(project.get('getRotationSchedule')(asSignedIn(project))).current.status, 'overdue');
 
   const summary = resolve(project);
   assert.match(summary, /Resolved the overdue turn of Alex Example \(last day 2026-01-11\) as admin_resolved/);
@@ -65,7 +66,7 @@ test('records admin_resolved for the overdue turn with the reason, and the rotat
   assert.equal(row.notes, 'Resolved by the owner: Away sick, agreed in the group chat');
   assert.equal(JSON.stringify(['ROOMMATES', 'ROTATION', 'SWAPS', 'VACATIONS'].map((n) => spreadsheet.getSheetByName(n).values)), others);
 
-  const { current } = plain(project.get('getRotationSchedule')());
+  const { current } = plain(project.get('getRotationSchedule')(asSignedIn(project)));
   assert.equal(current.assignee.roommate_id, SAM);
   assert.equal(current.status, 'pending');
   assert.equal(Date.parse(current.due_at), due(1), 'the resolved weekend is used up, like a completion');

@@ -4,7 +4,8 @@
 const TABS = ['schedule', 'vacation', 'swaps', 'history'];
 const BETA_STORAGE_KEY = 'chorenest-beta-notice';
 const BETA_NOTICE = 'Some issues may take longer to fix while the admin is away. Thanks for your patience!';
-const UNVERIFIED_NOTE = 'You picked this name from a list on this device. It isn’t a login and it isn’t verified: anyone with the link can pick any name.';
+// How the signed-in roommate's role (from the server) is shown. It is a label only: the server decides what is allowed.
+const ROLE_LABELS = { ADMIN: 'Admin', ROOMMATE: 'Roommate' };
 
 const WORK_IN_PROGRESS = {
   swaps: { icon: '🔄', title: 'Swaps', text: 'Trading a cleaning turn with a roommate will live here.' },
@@ -16,10 +17,6 @@ function renderBetaNotice() {
     '<button class="button button-quiet" type="button" data-action="dismiss-beta">Got it</button></div>';
 }
 
-function renderVacationPage() {
-  return '<h2 class="panel-title">Vacation</h2>' + renderVacationEntry();
-}
-
 // An honest placeholder: no buttons, no forms, nothing that looks like it saves.
 function renderWorkInProgress(tab) {
   const page = WORK_IN_PROGRESS[tab];
@@ -29,39 +26,28 @@ function renderWorkInProgress(tab) {
     '<p>' + escapeHtml(page.text) + '</p><p>Nothing to do here yet.</p></section>';
 }
 
-function profileState(schedule, selectedId) {
-  const id = schedule ? validSelection(schedule, selectedId) : null;
-  const me = id ? schedule.roommates.find(function (roommate) {
-    return roommate.roommate_id === id;
-  }) : null;
-  return me || null;
+function roleLabel(viewer) {
+  return Object.prototype.hasOwnProperty.call(ROLE_LABELS, viewer.role) ? ROLE_LABELS[viewer.role] : ROLE_LABELS.ROOMMATE;
 }
 
-// The top-right entry always states what is known: a name that was picked, or nothing.
-function renderProfileButton(schedule, selectedId) {
-  const me = profileState(schedule, selectedId);
-  const label = me ? displayName(me) : 'Just looking';
-  const state = me ? 'Not verified' : 'No name picked';
-  const icon = me ? avatar(me, 'sm') : '<span class="avatar avatar-sm avatar-none" aria-hidden="true">?</span>';
-  return icon + '<span class="profile-text"><span class="profile-name">' + escapeHtml(label) + '</span>' +
-    '<span class="profile-state">' + state + '</span></span>';
+// The top-right entry shows who is signed in, as the server reported it.
+function renderProfileButton(viewer) {
+  if (!viewer) return '';
+  return avatar(viewer, 'sm') + '<span class="profile-text"><span class="profile-name">' + escapeHtml(displayName(viewer)) + '</span>' +
+    '<span class="profile-state">' + escapeHtml(roleLabel(viewer)) + '</span></span>';
 }
 
-function profileLabel(schedule, selectedId) {
-  const me = profileState(schedule, selectedId);
-  return me ? 'Profile: ' + displayName(me) + ', not verified' : 'Profile: no name picked';
+function profileLabel(viewer) {
+  return viewer ? 'Profile: ' + displayName(viewer) + ', ' + roleLabel(viewer) : 'Profile';
 }
 
-function renderProfileDialog(schedule, selectedId) {
-  const me = profileState(schedule, selectedId);
-  const body = !schedule
-    ? '<p>The roommate list hasn’t loaded yet.</p>'
-    : me
-      ? '<p class="profile-who">Viewing as <strong>' + escapeHtml(displayName(me)) + '</strong></p><p>' + escapeHtml(UNVERIFIED_NOTE) + '</p>'
-      : '<p class="profile-who">Just looking</p><p>No name is picked. Pick yours on the Schedule tab to get a personal greeting. ' +
-        'It isn’t a login and it isn’t verified.</p>';
-  const change = schedule ? '<button class="button" type="button" data-action="change-name">' + (me ? 'Change name' : 'Pick a name') + '</button>' : '';
-  return '<div class="dialog-body"><h2 id="profile-title">Profile</h2>' + body +
-    '<div class="dialog-actions">' + change + '<button class="button button-quiet" type="button" data-action="close-profile" autofocus>Close</button></div></div>';
+function renderProfileDialog(viewer) {
+  return '<div class="dialog-body"><h2 id="profile-title">Profile</h2>' +
+    '<div class="profile-card">' + avatar(viewer, 'md') + '<div><p class="name">' + escapeHtml(displayName(viewer)) + '</p>' +
+    '<p class="profile-role"><span class="badge badge-role">' + escapeHtml(roleLabel(viewer)) + '</span> · Signed in</p></div></div>' +
+    '<p class="profile-note">Signing out ends your session on all your devices.</p>' +
+    '<div class="dialog-actions">' +
+    '<button class="button button-quiet" type="button" data-action="sign-out">Sign out</button>' +
+    '<button class="button" type="button" data-action="close-profile" autofocus>Close</button></div></div>';
 }
 </script>
