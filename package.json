@@ -4,7 +4,11 @@
   "private": true,
   "description": "Roommate cleaning rotation web app on Google Apps Script.",
   "scripts": {
-    "login": "clasp login",
+    "login": "node scripts/clasp-login.js",
+    "login:status": "node scripts/clasp-login.js --status",
+    "secrets": "node scripts/generate-secrets.js",
+    "temp-password": "node scripts/temp-password.js",
+    "bundle:noble": "node scripts/bundle-noble.js",
     "test": "node --test \"test/**/*.test.js\"",
     "push:dev": "node scripts/clasp-env.js dev push",
     "deploy:dev": "node scripts/clasp-env.js dev deploy",
@@ -13,6 +17,7 @@
   },
   "devDependencies": {
     "@google/clasp": "3.3.0",
+    "@noble/hashes": "1.8.0",
     "@playwright/test": "1.49.1"
   }
 }

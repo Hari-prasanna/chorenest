@@ -1,14 +1,14 @@
-const MARK_CLEANED_FIELDS = ['roommate_id', 'rotation_id', 'due_at'];
+const MARK_CLEANED_FIELDS = ['token', 'rotation_id', 'due_at'];
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const ISO_UTC_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
 
 /**
  * Browser API (google.script.run): records that the current assignee cleaned the home.
- * Request: { roommate_id, rotation_id, due_at } exactly as shown by getRotationSchedule().
+ * Request: { token, rotation_id, due_at } with the turn exactly as shown by getRotationSchedule().
  * Returns { ok: true, completed_at } or { ok: false, error: { code, message } }.
  *
- * `roommate_id` is an UNVERIFIED claim made by the page. It only stops someone marking another roommate's turn by
- * mistake and grants nothing: there are no roles, and the turn is re-derived from the Sheet under a script lock.
+ * Who cleaned is the signed-in roommate from the session token, never a value sent by the page. Only the current
+ * assignee can complete the turn, which is re-derived from the Sheet under the script lock.
  */
 function markCleaned(request) {
   let locked = false;
@@ -19,6 +19,8 @@ function markCleaned(request) {
       throw appError_('BUSY', 'Someone else is saving right now. Please try again in a moment.');
     }
     locked = true;
+    // The session is checked under the lock, against ROOMMATES as it is now.
+    claim.roommateId = sessionOf_(request).roommateId;
     return { ok: true, completed_at: completeCurrentTurn_(claim).toISOString() };
   } catch (error) {
     return apiError_(error, 'INTERNAL_ERROR');
@@ -37,10 +39,10 @@ function parseMarkRequest_(request) {
     Object.keys(request).every(function (field) {
       return MARK_CLEANED_FIELDS.indexOf(field) !== -1;
     }) &&
-    ID_PATTERN.test(asText_(request.roommate_id)) && ID_PATTERN.test(asText_(request.rotation_id)) &&
+    typeof request.token === 'string' && ID_PATTERN.test(asText_(request.rotation_id)) &&
     ISO_UTC_PATTERN.test(asText_(request.due_at)) && !isNaN(Date.parse(request.due_at));
   if (!valid) throw appError_('INVALID_REQUEST', 'That request wasn’t valid, so nothing was saved.');
-  return { roommateId: request.roommate_id, rotationId: request.rotation_id, dueMs: Date.parse(request.due_at) };
+  return { rotationId: request.rotation_id, dueMs: Date.parse(request.due_at) };
 }
 
 /** Runs under the lock: re-reads the Sheet, checks the claim against the real current turn, then appends the log. */
@@ -72,7 +74,7 @@ function completeCurrentTurn_(claim) {
     outcome: 'completed',
     resolved_at: now,
     completed_at: now,
-    notes: 'Marked done in ChoreNest (the roommate selection is unverified).',
+    notes: 'Marked done in ChoreNest by the signed-in roommate.',
   };
   if (turn.swap_id) record.swap_id = turn.swap_id;
 

@@ -12,6 +12,7 @@ const {
   loadProject,
   plain,
 } = require('./support/appsScript');
+const { asSignedIn } = require('./support/appsScript');
 
 const NOW = new Date('2026-01-13T12:00:00Z');
 const SHEETS = Object.keys(FIXTURES);
@@ -32,7 +33,7 @@ function devProject(spreadsheet, properties = {}) {
 }
 
 function schedule(project) {
-  return plain(project.get('getRotationSchedule')());
+  return plain(project.get('getRotationSchedule')(asSignedIn(project)));
 }
 
 function errorCode(project) {
@@ -83,7 +84,8 @@ test('returns the current turn and the next three, as computed by the rotation e
 });
 
 test('the response is browser-safe: JSON only, ISO dates, names but no emails', () => {
-  const raw = devProject(fixtureSpreadsheet()).get('getRotationSchedule')();
+  const app = devProject(fixtureSpreadsheet());
+  const raw = app.get('getRotationSchedule')(asSignedIn(app));
   const json = JSON.stringify(raw);
   assert.deepEqual(JSON.parse(json), plain(raw));
   const walk = (value) => {
@@ -173,12 +175,19 @@ test('a missing sheet or column asks for setupDatabase; other header problems ar
 
 // Empty database and invalid rotation data
 
-test('an empty database is ROTATION_EMPTY', () => {
-  const headersOnly = Object.fromEntries(SHEETS.map((name) => [name, [fixtureSheet(name)[0]]]));
+test('an empty rotation is ROTATION_EMPTY; with nobody active, nobody can even sign in', () => {
+  // The signed-in roommate exists, but nothing else has been set up yet.
+  const headersOnly = Object.fromEntries(SHEETS.filter((name) => name !== 'ROOMMATES').map((name) => [name, [fixtureSheet(name)[0]]]));
   assert.equal(errorCode(devProject(fixtureSpreadsheet({ sheets: headersOnly }))), 'ROTATION_EMPTY');
 
+  // Only Alex is active, and Alex has no rotation position: nobody can be assigned.
+  const onlyAlexActive = sheetWith('ROOMMATES', (r) => ({ ...r, active: r.roommate_id === FIXTURES.ROOMMATES[0].roommate_id }));
+  const withoutAlex = sheetWith('ROTATION', (s) => s);
+  const rotation = [withoutAlex[0], ...withoutAlex.slice(1).filter((row) => row[withoutAlex[0].indexOf('roommate_id')] !== FIXTURES.ROOMMATES[0].roommate_id)];
+  assert.equal(errorCode(devProject(fixtureSpreadsheet({ sheets: { ROOMMATES: onlyAlexActive, ROTATION: rotation, CLEANING_LOGS: [fixtureSheet('CLEANING_LOGS')[0]], SWAPS: [fixtureSheet('SWAPS')[0]] } }))), 'ROTATION_EMPTY');
+
   const inactive = sheetWith('ROOMMATES', (r) => ({ ...r, active: false }));
-  assert.equal(errorCode(devProject(fixtureSpreadsheet({ sheets: { ROOMMATES: inactive } }))), 'ROTATION_EMPTY');
+  assert.equal(errorCode(devProject(fixtureSpreadsheet({ sheets: { ROOMMATES: inactive } }))), 'UNAUTHENTICATED');
 });
 
 test('invalid rotation data is ROTATION_DATA_INVALID, and the reason stays in the server log', () => {
@@ -189,7 +198,11 @@ test('invalid rotation data is ROTATION_DATA_INVALID, and the reason stays in th
   ];
   for (const [sheets, reason] of cases) {
     const result = schedule(devProject(fixtureSpreadsheet({ sheets })));
-    assert.deepEqual(result, { ok: false, error: { code: 'ROTATION_DATA_INVALID', message: 'The rotation data needs attention.' } });
+    assert.deepEqual(result, {
+      ok: false,
+      error: { code: 'ROTATION_DATA_INVALID', message: 'The rotation data needs attention.' },
+      viewer: { roommate_id: FIXTURES.ROOMMATES[0].roommate_id, name: 'Alex Example', role: 'ADMIN', must_change_password: false },
+    });
     assert.doesNotMatch(JSON.stringify(result), reason);
   }
 });
@@ -204,7 +217,8 @@ test('unexpected failures are INTERNAL_ERROR without internal details', () => {
 });
 
 test('error responses are browser-safe JSON', () => {
-  const raw = devProject(fixtureSpreadsheet({ marker: null })).get('getRotationSchedule')();
+  const app = devProject(fixtureSpreadsheet({ marker: null }));
+  const raw = app.get('getRotationSchedule')(asSignedIn(app));
   assert.deepEqual(JSON.parse(JSON.stringify(raw)), plain(raw));
   assert.deepEqual(Object.keys(raw).sort(), ['error', 'ok']);
 });
@@ -212,7 +226,8 @@ test('error responses are browser-safe JSON', () => {
 // Roommate picker data
 
 test('lists active roommates by name, with only ids and names', () => {
-  const raw = devProject(fixtureSpreadsheet()).get('getRotationSchedule')();
+  const app = devProject(fixtureSpreadsheet());
+  const raw = app.get('getRotationSchedule')(asSignedIn(app));
   const result = plain(raw);
   const expected = FIXTURES.ROOMMATES.map((r) => ({ roommate_id: r.roommate_id, name: r.name })).sort((a, b) => a.name.localeCompare(b.name));
   assert.deepEqual(result.roommates, expected);
@@ -229,8 +244,44 @@ test('inactive roommates are not offered', () => {
   assert.deepEqual(result.roommates.map((r) => r.name), ['Alex Example', 'Jo Example', 'Sam Example']);
 });
 
-test('the schedule API takes no input, so a caller cannot choose who they are', () => {
+test('the schedule API takes only a session token: the viewer comes from it, and any claim is refused', () => {
   const project = devProject(fixtureSpreadsheet());
-  const baseline = plain(project.get('getRotationSchedule')());
-  assert.deepEqual(plain(project.get('getRotationSchedule')(FIXTURES.ROOMMATES[1].roommate_id, 'admin', { role: 'admin' })), baseline);
+  const sam = FIXTURES.ROOMMATES[1].roommate_id;
+  const asSam = plain(project.get('getRotationSchedule')(asSignedIn(project, { roommate_id: sam })));
+  assert.equal(asSam.viewer.roommate_id, sam);
+  assert.equal(asSam.viewer.role, 'ROOMMATE');
+  const { token } = asSignedIn(project, { roommate_id: sam });
+  for (const request of [{ token, roommate_id: FIXTURES.ROOMMATES[0].roommate_id }, { token, role: 'ADMIN' }, { token: 42 }, [token], token]) {
+    assert.equal(plain(project.get('getRotationSchedule')(request)).error.code, 'INVALID_REQUEST', JSON.stringify(request).slice(0, 40));
+  }
+  for (const request of [undefined, null, {}]) {
+    assert.ok(['INVALID_REQUEST', 'UNAUTHENTICATED'].includes(plain(project.get('getRotationSchedule')(request)).error.code));
+  }
+  assert.equal(plain(project.get('getRotationSchedule')({ token: token.slice(0, -2) + 'xx' })).error.code, 'UNAUTHENTICATED');
+});
+
+test('the upcoming turns always come after the current one and never repeat it', () => {
+  const headers = (name) => fixtureSheet(name)[0];
+  const row = (name, record) => headers(name).map((h) => (h in record ? record[h] : ''));
+  const late = { vacation_id: 'v-late', roommate_id: FIXTURES.ROOMMATES[1].roommate_id, start_date: new Date('2026-01-16T23:00:00Z'), return_date: new Date('2026-01-25T23:00:00Z'), created_at: new Date('2026-01-14T09:00:00Z'), cancelled_at: '' };
+  const variants = {
+    fixtures: {},
+    'no history': { CLEANING_LOGS: [headers('CLEANING_LOGS')], SWAPS: [headers('SWAPS')] },
+    'a late vacation': { VACATIONS: [...fixtureSheet('VACATIONS'), row('VACATIONS', late)] },
+  };
+  // Mid-week, on a weekend, just before and after the Monday boundary, weeks later (overdue), and across the clock change.
+  const moments = ['2026-01-13T12:00:00Z', '2026-01-17T10:00:00Z', '2026-01-18T22:59:59Z', '2026-01-18T23:00:00Z', '2026-02-20T12:00:00Z', '2026-03-29T00:30:00Z', '2026-10-25T00:30:00Z'];
+  for (const [label, sheets] of Object.entries(variants)) {
+    for (const moment of moments) {
+      const project = loadProject({ properties: { ENVIRONMENT: 'DEV', SPREADSHEET_ID: DEV_SPREADSHEET_ID }, spreadsheets: [fixtureSpreadsheet({ sheets })], now: new Date(moment) });
+      const result = schedule(project);
+      assert.equal(result.ok, true, `${label} @ ${moment}`);
+      let previous = Date.parse(result.current.due_at);
+      for (const turn of result.upcoming) {
+        assert.ok(Date.parse(turn.due_at) > previous, `${label} @ ${moment}: upcoming turns move forward`);
+        assert.ok(!(turn.rotation_id === result.current.rotation_id && turn.due_at === result.current.due_at), `${label} @ ${moment}: the current turn is not repeated`);
+        previous = Date.parse(turn.due_at);
+      }
+    }
+  }
 });

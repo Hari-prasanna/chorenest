@@ -1,8 +1,14 @@
 <script>
-// Vacation views: data in, HTML strings out. No DOM access, so Node tests can run them. Dates are Berlin time.
-// Vacations are changed under the name picked on the page. That is an unverified claim, not a login.
-const TRUST_NOTE = 'Trust-based for now: anyone with this link can change a vacation for the name picked on the main screen. The selection is not a login and is not verified.';
-const WEEKEND_STATUS_LABELS = { skipped: 'Turn skipped', not_their_turn: 'No turn that weekend', later: 'Not scheduled yet' };
+// Vacation views: data in, HTML strings out. No DOM access, so Node tests can run them. Dates are Berlin calendar days.
+// Vacations are planned and changed by the signed-in roommate; the server takes who that is from the session.
+const VACATION_STATES = { away: 'Away now', upcoming: 'Upcoming', returned: 'Returned' };
+const VACATION_GROUPS = [
+  ['away', 'Away now'],
+  ['upcoming', 'Upcoming'],
+  ['returned', 'Recently back'],
+];
+const WEEKEND_STATUS_LABELS = { skipped: 'Turn skipped', not_their_turn: 'No turn that weekend', later: 'Not scheduled yet', past: 'Past weekend' };
+const LEAVING_SOON_MS = 14 * 24 * 60 * 60 * 1000;
 const VACATION_ERROR_MESSAGES = {
   UNKNOWN_ROOMMATE: 'That roommate isn’t on the list.',
   VACATION_DATES_INVALID: 'Pick a first day away and a first day back that are real dates.',
@@ -17,6 +23,14 @@ const VACATION_ERROR_MESSAGES = {
   NOT_YOUR_VACATION: 'That vacation belongs to someone else.',
   VACATION_STARTED: 'A vacation that has started can’t be cancelled here.',
   VACATION_IN_USE: 'This vacation has already skipped a turn, so it can’t be cancelled here.',
+  VACATION_CHANGED: 'This vacation changed since you loaded it. Here’s the latest.',
+  VACATION_ENDED: 'This vacation is over, so it can’t be changed.',
+  VACATION_START_LOCKED: 'A vacation that has started keeps its first day away.',
+  VACATION_BACK_IN_PAST: 'The first day back can’t be in the past.',
+  VACATION_NOT_STARTED: 'This vacation hasn’t started yet. Edit or cancel it instead.',
+  VACATION_JUST_STARTED: 'This vacation started today, so it can’t end today. Ask the app owner to remove it.',
+  VACATION_SKIP_RECORDED: 'A turn was already skipped for this vacation, and the new dates no longer cover it. Ask the app owner to change it.',
+  VACATION_TURN_CONFLICT: 'This change would affect the current cleaning turn, so it can’t be made here. Ask the app owner to sort it out.',
   BUSY: 'Someone else is saving right now. Please try again in a moment.',
   WRITE_FAILED: 'We couldn’t save that. Nothing was recorded, so you can try again.',
 };
@@ -28,6 +42,12 @@ function vacationErrorMessage(code) {
 /** Today in Berlin as YYYY-MM-DD, the earliest first day away. */
 function todayInBerlin() {
   const day = berlinParts(Date.now(), { year: 'numeric', month: '2-digit', day: '2-digit' });
+  return day.year + '-' + day.month + '-' + day.day;
+}
+
+/** An ISO time as the Berlin calendar date YYYY-MM-DD, for a date field. */
+function berlinDateInput(iso) {
+  const day = berlinParts(Date.parse(iso), { year: 'numeric', month: '2-digit', day: '2-digit' });
   return day.year + '-' + day.month + '-' + day.day;
 }
 
@@ -46,17 +66,135 @@ function vacationFormProblem(start, back) {
   return back <= start ? vacationErrorMessage('VACATION_ORDER') : '';
 }
 
-// The card on the main screen.
-function renderVacationEntry() {
-  return '<section class="card vacation-entry" aria-labelledby="vacations-title">' +
-    '<h2 class="eyebrow section-title" id="vacations-title">Vacations</h2>' +
-    '<p class="vacation-intro"><span aria-hidden="true">🏖️</span> Going away? Plan it here and your turns are skipped, with no make-up turn.</p>' +
-    '<button class="button button-quiet" type="button" data-action="open-vacations">See and plan vacations</button></section>';
+function isValidVacation(vacation) {
+  return Boolean(vacation) && typeof vacation.roommate_id === 'string' && Object.prototype.hasOwnProperty.call(VACATION_STATES, vacation.state) &&
+    !isNaN(Date.parse(vacation.start_date)) && !isNaN(Date.parse(vacation.return_date)) && Array.isArray(vacation.weekends) &&
+    vacation.weekends.every(function (weekend) {
+      return Boolean(weekend) && !isNaN(Date.parse(weekend.weekend_starts_at)) && !isNaN(Date.parse(weekend.due_at));
+    });
 }
 
-function renderVacationLoading() {
-  return '<div class="dialog-body dialog-scroll" role="status"><p class="dialog-emoji" aria-hidden="true">🏖️</p>' +
-    '<h2 id="vacation-title">Vacations</h2><p>Loading…</p></div>';
+function isValidVacationList(result) {
+  return Boolean(result) && result.ok === true && Array.isArray(result.vacations) && result.vacations.every(isValidVacation);
+}
+
+function vacationPerson(vacation) {
+  return { roommate_id: vacation.roommate_id, name: vacation.name };
+}
+
+// The weekends a vacation touches, folded away by default: most people only need the dates.
+function renderCleaningImpact(vacation) {
+  if (!vacation.weekends.length) return '';
+  const skipped = vacation.weekends.filter(function (weekend) {
+    return weekend.status === 'skipped';
+  }).length;
+  return '<details class="impact"><summary>Cleaning impact' +
+    (skipped ? ' · ' + skipped + (skipped === 1 ? ' turn skipped' : ' turns skipped') : '') + '</summary>' +
+    '<ul class="chips">' + vacation.weekends.map(function (weekend) {
+      return '<li class="chip' + (weekend.status === 'skipped' ? ' chip-skipped' : '') + '">' + escapeHtml(formatWeekend(weekend)) + ' · ' +
+        escapeHtml(WEEKEND_STATUS_LABELS[weekend.status] || 'Weekend') + '</li>';
+    }).join('') + '</ul></details>';
+}
+
+// One roommate's vacation as a compact card. Only your own vacation offers actions, and the server checks each again.
+function renderVacationCard(vacation, selectedId) {
+  const mine = Boolean(selectedId) && selectedId === vacation.roommate_id;
+  const chips = renderCleaningImpact(vacation);
+  const actions = [];
+  if (mine && vacation.state === 'upcoming' && vacation.cancellable) {
+    actions.push('<button class="button button-quiet button-small" type="button" data-action="cancel-vacation" data-vacation-id="' +
+      escapeHtml(vacation.vacation_id) + '">Cancel vacation</button>');
+  }
+  const id = escapeHtml(vacation.vacation_id);
+  if (mine && vacation.vacation_id && (vacation.state === 'upcoming' || vacation.state === 'away')) {
+    actions.push('<button class="button button-quiet button-small" type="button" data-action="edit-vacation" data-vacation-id="' + id + '">Edit dates</button>');
+  }
+  if (mine && vacation.vacation_id && vacation.state === 'away') {
+    actions.push('<button class="button button-small" type="button" data-action="end-vacation" data-vacation-id="' + id + '">I’m back</button>');
+  }
+  return '<li class="card vacation-card">' +
+    '<div class="vacation-head">' + avatar(vacationPerson(vacation), 'sm') +
+    '<p class="name">' + escapeHtml(displayName(vacationPerson(vacation))) + '</p>' +
+    '<span class="badge badge-' + vacation.state + '">' + VACATION_STATES[vacation.state] + '</span></div>' +
+    '<dl class="vacation-facts"><div><dt>First day away</dt><dd>' + escapeHtml(formatVacationDay(vacation.start_date)) + '</dd></div>' +
+    '<div><dt>First day back</dt><dd>' + escapeHtml(formatVacationDay(vacation.return_date)) + '</dd></div></dl>' +
+    chips + (actions.length ? '<div class="vacation-actions">' + actions.join('') + '</div>' : '') + '</li>';
+}
+
+function renderVacationGroups(vacations, selectedId) {
+  return VACATION_GROUPS.map(function (group) {
+    const items = vacations.filter(function (vacation) {
+      return vacation.state === group[0];
+    });
+    if (group[0] === 'returned') {
+      items.sort(function (a, b) {
+        return Date.parse(b.return_date) - Date.parse(a.return_date);
+      });
+    }
+    if (!items.length) return '';
+    return '<section class="vacation-group" aria-labelledby="vacations-' + group[0] + '"><h3 class="eyebrow section-title" id="vacations-' + group[0] + '">' +
+      group[1] + '</h3><ul class="vacation-grid">' + items.map(function (vacation) {
+        return renderVacationCard(vacation, selectedId);
+      }).join('') + '</ul></section>';
+  }).join('');
+}
+
+/**
+ * The Vacation tab. `view` is { status: 'loading' | 'ready' | 'error' | 'network', vacations, selectedId, selectedName,
+ * notice }, where selectedId/selectedName are the signed-in roommate's.
+ */
+function renderVacationOverview(view) {
+  const plan = view.selectedName
+    ? '<button class="button" type="button" data-action="plan-vacation"><span aria-hidden="true">🏖️</span> Plan vacation</button>'
+    : '';
+  let body;
+  if (view.status === 'ready') {
+    body = view.vacations.length
+      ? renderVacationGroups(view.vacations, view.selectedId)
+      : '<section class="card state state-compact"><span class="state-icon" aria-hidden="true">🏡</span><h3>Everyone’s home</h3>' +
+        '<p>No vacations are planned.</p></section>';
+  } else if (view.status === 'error' || view.status === 'network') {
+    body = '<section class="card state state-compact"><span class="state-icon" aria-hidden="true">🏖️</span><h3>Couldn’t load vacations</h3><p>' +
+      (view.status === 'network' ? 'Check your connection and try again.' : 'Try again in a moment.') + '</p>' +
+      '<button class="button" type="button" data-action="retry-vacations">Try again</button></section>';
+  } else {
+    body = '<div role="status"><p class="eyebrow">Loading vacations…</p><div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div></div>';
+  }
+  return '<div class="layout"><div class="vacation-top"><div><h2 class="panel-title">Vacations</h2>' +
+    '<p class="vacation-intro">Turns that fall in a vacation are skipped, with no make-up turn.</p></div>' + plan + '</div>' +
+    (view.notice ? renderNotice(view.notice) : '') + body + '</div>';
+}
+
+/**
+ * "Who's away" on the Schedule page: who is away now and who leaves in the next two weeks. Information only: it never
+ * changes who cleans. `view` is { status, vacations, nowMs }.
+ */
+function renderAwaySummary(view) {
+  let body;
+  if (view.status === 'ready') {
+    const away = view.vacations.filter(function (vacation) {
+      return vacation.state === 'away';
+    });
+    const soon = view.vacations.filter(function (vacation) {
+      return vacation.state === 'upcoming' && Date.parse(vacation.start_date) - view.nowMs <= LEAVING_SOON_MS;
+    });
+    const item = function (vacation, when) {
+      return '<li class="away-item">' + avatar(vacationPerson(vacation), 'sm') + '<span class="name">' + escapeHtml(displayName(vacationPerson(vacation))) +
+        '</span><span class="away-when">' + escapeHtml(when) + '</span></li>';
+    };
+    body = away.length || soon.length
+      ? '<ul class="away-list">' + away.map(function (vacation) {
+        return item(vacation, 'Away · back ' + formatVacationDay(vacation.return_date));
+      }).concat(soon.map(function (vacation) {
+        return item(vacation, 'Leaves ' + formatVacationDay(vacation.start_date));
+      })).join('') + '</ul>'
+      : '<p class="away-empty">Everyone’s home.</p>';
+  } else if (view.status === 'error' || view.status === 'network') {
+    body = '<p class="away-empty">Couldn’t load vacations. <button class="button button-quiet button-small" type="button" data-action="retry-vacations">Try again</button></p>';
+  } else {
+    body = '<p class="away-empty">Checking vacations…</p>';
+  }
+  return '<section class="card away-card" aria-labelledby="away-title"><h2 class="eyebrow" id="away-title">Who’s away</h2>' + body + '</section>';
 }
 
 function renderVacationSaving() {
@@ -64,44 +202,8 @@ function renderVacationSaving() {
     '<h2 id="vacation-title">Saving…</h2></div>';
 }
 
-function renderVacationProblem(code) {
-  return '<div class="dialog-body dialog-scroll"><p class="dialog-emoji" aria-hidden="true">🧹</p><h2 id="vacation-title">Vacations</h2>' +
-    '<p>' + escapeHtml(code === 'REQUEST_FAILED' ? 'We couldn’t reach the server. Check your connection and try again.' : 'We couldn’t load the vacations. Try again in a moment.') + '</p>' +
-    '<div class="dialog-actions"><button class="button" type="button" data-action="retry-vacations">Try again</button>' +
-    '<button class="button button-quiet" type="button" data-action="close-vacation">Close</button></div></div>';
-}
-
-function renderVacationItem(vacation, selectedId) {
-  const chips = vacation.weekends.length
-    ? '<ul class="chips">' + vacation.weekends.map(function (weekend) {
-      return '<li class="chip' + (weekend.status === 'skipped' ? ' chip-skipped' : '') + '">' + escapeHtml(formatWeekend(weekend)) + ' · ' +
-        escapeHtml(WEEKEND_STATUS_LABELS[weekend.status] || weekend.status) + '</li>';
-    }).join('') + '</ul>'
-    : '<p class="vacation-note">No cleaning weekends affected.</p>';
-  const cancel = selectedId === vacation.roommate_id && vacation.cancellable
-    ? '<button class="button button-quiet" type="button" data-action="cancel-vacation" data-vacation-id="' + escapeHtml(vacation.vacation_id) + '">Cancel vacation</button>'
-    : '';
-  const away = vacation.state === 'away';
-  return '<li class="vacation-item"><div class="turn-head"><p class="name">' + escapeHtml(vacation.name) + '</p>' +
-    '<span class="step' + (away ? ' is-next' : '') + '">' + (away ? 'Away now' : 'Upcoming') + '</span></div>' +
-    '<p class="when"><span aria-hidden="true">🏖️</span> ' + escapeHtml(formatVacationDates(vacation)) + '</p>' + chips + cancel + '</li>';
-}
-
-function renderVacationList(vacations, selectedId, selectedName, notice) {
-  const items = vacations.length
-    ? '<ul class="vacation-list">' + vacations.map(function (vacation) { return renderVacationItem(vacation, selectedId); }).join('') + '</ul>'
-    : '<p class="vacation-note">No vacations planned.</p>';
-  const plan = selectedId
-    ? '<button class="button" type="button" data-action="plan-vacation"><span aria-hidden="true">🏖️</span> Plan a vacation for ' + escapeHtml(selectedName) + '</button>'
-    : '<p class="who-note">Pick your name on the main screen to plan or cancel a vacation.</p>';
-  return '<div class="dialog-body dialog-scroll"><h2 id="vacation-title">Vacations</h2>' + (notice ? renderNotice(notice) : '') +
-    '<p class="who-note">' + escapeHtml(TRUST_NOTE) + '</p>' + items +
-    '<div class="dialog-actions">' + plan + '<button class="button button-quiet" type="button" data-action="close-vacation">Close</button></div></div>';
-}
-
 function renderVacationForm(name, today, draft, error) {
   return '<div class="dialog-body dialog-scroll"><h2 id="vacation-title">Plan a vacation for ' + escapeHtml(name) + '</h2>' +
-    '<p class="who-note">' + escapeHtml(TRUST_NOTE) + '</p>' +
     '<div class="field"><label for="vacation-start">First day away</label>' +
     '<input class="date-input" id="vacation-start" type="date" min="' + escapeHtml(today) + '" value="' + escapeHtml(draft.start || '') + '"></div>' +
     '<div class="field"><label for="vacation-return">First day back</label>' +
@@ -109,13 +211,44 @@ function renderVacationForm(name, today, draft, error) {
     (error ? '<p class="form-error" role="alert">' + escapeHtml(error) + '</p>' : '') +
     '<p class="who-note">Your turns while you are away are skipped, with no make-up turn. The first day back is the first day you can clean again.</p>' +
     '<div class="dialog-actions"><button class="button" type="button" data-action="save-vacation">Save vacation</button>' +
-    '<button class="button button-quiet" type="button" data-action="back-to-vacations">Back</button></div></div>';
+    '<button class="button button-quiet" type="button" data-action="close-vacation">Not now</button></div></div>';
+}
+
+// Editing keeps the vacation's ID. Once it has started, the first day away is shown but can't change.
+function renderVacationEditForm(vacation, today, draft, error) {
+  const started = vacation.state === 'away';
+  return '<div class="dialog-body dialog-scroll"><h2 id="vacation-title">Change your vacation dates</h2>' +
+    '<div class="field"><label for="vacation-start">First day away</label>' +
+    '<input class="date-input" id="vacation-start" type="date" min="' + escapeHtml(today) + '" value="' + escapeHtml(draft.start || '') + '"' +
+    (started ? ' disabled aria-describedby="vacation-start-note"' : '') + '>' +
+    (started ? '<p class="who-note" id="vacation-start-note">Your vacation has started, so the first day away stays.</p>' : '') + '</div>' +
+    '<div class="field"><label for="vacation-return">First day back</label>' +
+    '<input class="date-input" id="vacation-return" type="date" min="' + escapeHtml(today) + '" value="' + escapeHtml(draft.back || '') + '"></div>' +
+    (error ? '<p class="form-error" role="alert">' + escapeHtml(error) + '</p>' : '') +
+    '<p class="who-note">Turns that are already open, done or skipped stay as they are. If a change would affect them, ask the app owner.</p>' +
+    '<div class="dialog-actions"><button class="button" type="button" data-action="save-edit">Save changes</button>' +
+    '<button class="button button-quiet" type="button" data-action="close-vacation">Not now</button></div></div>';
+}
+
+function renderVacationEndConfirm(vacation, todayIso) {
+  return '<div class="dialog-body dialog-scroll"><p class="dialog-emoji" aria-hidden="true">🏡</p><h2 id="vacation-title">Back already?</h2>' +
+    '<p>Today, ' + escapeHtml(formatVacationDay(todayIso)) + ', becomes your first day back. Turns from today on count for you again.</p>' +
+    '<p class="who-note">Turns that are already done or skipped stay as they are.</p>' +
+    '<div class="dialog-actions"><button class="button" type="button" data-action="confirm-end-vacation">Yes, I’m back</button>' +
+    '<button class="button button-quiet" type="button" data-action="close-vacation" autofocus>Not yet</button></div></div>';
+}
+
+// Why "I'm back" could not be saved, in the dialog itself: nothing was changed.
+function renderVacationEndProblem(code) {
+  return '<div class="dialog-body dialog-scroll"><p class="dialog-emoji" aria-hidden="true">🏖️</p><h2 id="vacation-title">Your vacation wasn’t changed</h2>' +
+    '<p class="form-error" role="alert">' + escapeHtml(vacationErrorMessage(code)) + '</p>' +
+    '<div class="dialog-actions dialog-actions-single"><button class="button button-quiet" type="button" data-action="close-vacation" autofocus>OK</button></div></div>';
 }
 
 function renderVacationCancelConfirm(vacation) {
   return '<div class="dialog-body dialog-scroll"><p class="dialog-emoji" aria-hidden="true">🏖️</p><h2 id="vacation-title">Cancel this vacation?</h2>' +
     '<p>' + escapeHtml(vacation.name) + ': ' + escapeHtml(formatVacationDates(vacation)) + '. Your turns in that time will count again.</p>' +
     '<div class="dialog-actions"><button class="button" type="button" data-action="confirm-cancel-vacation">Yes, cancel it</button>' +
-    '<button class="button button-quiet" type="button" data-action="back-to-vacations" autofocus>Keep it</button></div></div>';
+    '<button class="button button-quiet" type="button" data-action="close-vacation" autofocus>Keep it</button></div></div>';
 }
 </script>

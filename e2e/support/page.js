@@ -1,12 +1,18 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { expect } = require('@playwright/test');
-const { installMock, schedule, vacations } = require('./mock');
+const { installMock, schedule, vacations, viewerOf, FAR_FUTURE } = require('./mock');
 
 const SHOTS = path.join(__dirname, '..', 'results', 'screenshots');
 
-/** Opens the app with a mocked backend. `seed` sets localStorage values only if they are not there yet. */
-async function openApp(page, { seed = { 'chorenest-beta-notice': 'dismissed' }, query = '', ...mock } = {}) {
+/**
+ * Opens the app with a mocked backend. `seed` sets localStorage values only if they are not there yet.
+ * `as` signs the page in as that roommate: a stored session, and the mocked server reports them as `viewer`.
+ * The default is Jijo, who is not the current assignee; `as: null` starts signed out.
+ */
+async function openApp(page, { seed = { 'chorenest-beta-notice': 'dismissed' }, query = '', as = 'Jijo', viewer, ...mock } = {}) {
+  if (as) seed = { 'chorenest-session': JSON.stringify({ token: `token-${as}`, expires_at: FAR_FUTURE }), ...seed };
+  mock.viewer = viewer || (as ? viewerOf(as) : null);
   const problems = [];
   page.on('console', (message) => {
     if (message.type() === 'error' || message.type() === 'warning') problems.push(`console ${message.type()}: ${message.text()}`);

@@ -10,6 +10,15 @@ const PUBLIC_ERROR_MESSAGES = {
   DATABASE_ENVIRONMENT_MISMATCH: SETUP_PROBLEM,
   TIMEZONE_MISMATCH: SETUP_PROBLEM,
   SCHEMA_INVALID: SETUP_PROBLEM,
+  UNAUTHENTICATED: 'Please sign in again.',
+  PASSWORD_CHANGE_REQUIRED: 'Please choose a new password first.',
+  FORBIDDEN: 'You don’t have access to that.',
+  // One message for unknown usernames, wrong passwords and locked accounts, so none can be told apart.
+  LOGIN_FAILED: 'Sign-in failed. Check your username and password. After several failed attempts, wait 15 minutes.',
+  PASSWORD_WEAK: 'Choose a password of at least 10 characters that isn’t easy to guess.',
+  PASSWORD_REUSED: 'Choose a password different from the current one.',
+  TEMP_PASSWORD_EXPIRED: 'This temporary password has expired. Ask the app owner for a new one.',
+  PASSWORD_CHANGE_FAILED: 'Your current password is wrong, or there were too many attempts. Wait 15 minutes and try again.',
   ROTATION_EMPTY: 'There is no rotation yet.',
   ROTATION_DATA_INVALID: 'The rotation data needs attention.',
   INVALID_REQUEST: 'That request wasn’t valid, so nothing was saved.',
@@ -32,20 +41,31 @@ const PUBLIC_ERROR_MESSAGES = {
   NOT_YOUR_VACATION: 'That vacation belongs to someone else.',
   VACATION_STARTED: 'A vacation that has started can’t be cancelled here.',
   VACATION_IN_USE: 'This vacation has already skipped a turn, so it can’t be cancelled here.',
+  VACATION_CHANGED: 'This vacation changed since you loaded it. Here’s the latest.',
+  VACATION_ENDED: 'This vacation is over, so it can’t be changed.',
+  VACATION_START_LOCKED: 'A vacation that has started keeps its first day away.',
+  VACATION_BACK_IN_PAST: 'The first day back can’t be in the past.',
+  VACATION_NOT_STARTED: 'This vacation hasn’t started yet. Edit or cancel it instead.',
+  VACATION_JUST_STARTED: 'This vacation started today, so it can’t end today. Ask the app owner to remove it.',
+  VACATION_SKIP_RECORDED: 'A turn was already skipped for this vacation, and the new dates no longer cover it. Ask the app owner to change it.',
+  VACATION_TURN_CONFLICT: 'This change would affect the current cleaning turn, so it can’t be made here. Ask the app owner to sort it out.',
   INTERNAL_ERROR: 'Something went wrong. Try again later.',
 };
 
 /**
  * Browser API (google.script.run): the current cleaning turn and the next few, read-only.
- * Returns { ok: true, generated_at, current, upcoming, roommates } or { ok: false, error: { code, message } }.
- * `roommates` lists active roommates as { roommate_id, name } for the "who are you?" picker. It takes no input.
+ * Request: { token }. Returns { ok: true, viewer, generated_at, current, upcoming, roommates } or
+ * { ok: false, error: { code, message } } (with `viewer` when only the rotation data is the problem).
+ * `viewer` is the signed-in roommate from the session; `roommates` lists active roommates' names for display.
  * Dates are ISO strings because google.script.run cannot return Date objects.
  */
-function getRotationSchedule() {
+function getRotationSchedule(request) {
   let records;
+  let viewer;
   try {
-    getEnvironment_();
+    authRequest_(request, ['token']);
     records = SheetDb.listMany(ROTATION_SHEETS);
+    viewer = viewerOf_(sessionOf_(request, records.ROOMMATES));
   } catch (error) {
     return apiError_(error, 'INTERNAL_ERROR');
   }
@@ -82,6 +102,7 @@ function getRotationSchedule() {
     currentJson.status = current.status;
     return {
       ok: true,
+      viewer: viewer,
       generated_at: now.toISOString(),
       current: currentJson,
       upcoming: upcoming.map(function (turn) {
@@ -91,7 +112,7 @@ function getRotationSchedule() {
     };
   } catch (error) {
     // The engine only throws because of the data it was given.
-    return apiError_(error, 'ROTATION_DATA_INVALID');
+    return Object.assign(apiError_(error, 'ROTATION_DATA_INVALID'), { viewer: viewer });
   }
 }
 

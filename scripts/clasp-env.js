@@ -2,6 +2,8 @@
 // Runs clasp against exactly one environment's Apps Script project.
 // Usage: node scripts/clasp-env.js <dev|prod> <push|deploy>
 //
+// Every run also passes ChoreNest's own personal credential file via --auth (see clasp-auth.js),
+// so a work login in ~/.clasprc.json is never used and a missing login fails instead of falling back.
 // Each run passes the environment's own config file to clasp via --project,
 // so there is no shared "active" .clasp.json that could point at the wrong project.
 'use strict';
@@ -10,6 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 const { spawnSync } = require('child_process');
+const { AUTH_FILE, checkPersonalAuth } = require('./clasp-auth');
 
 const ROOT = path.resolve(__dirname, '..');
 const ENVIRONMENTS = ['dev', 'prod'];
@@ -67,7 +70,8 @@ function runClasp(env, args) {
   if (!fs.existsSync(pkgFile)) fail('clasp is not installed. Run "npm install".');
   const bin = path.join(pkgDir, JSON.parse(fs.readFileSync(pkgFile, 'utf8')).bin.clasp);
 
-  const result = spawnSync(process.execPath, [bin, '--project', configFile(env), ...args], {
+  // --auth always names ChoreNest's own credential file, so clasp can never fall back to ~/.clasprc.json.
+  const result = spawnSync(process.execPath, [bin, '--auth', AUTH_FILE, '--project', configFile(env), ...args], {
     cwd: ROOT,
     stdio: 'inherit',
   });
@@ -112,12 +116,21 @@ async function main() {
 
   assertWrappersAreSafe();
 
+  // Fail closed: without the personal login nothing is pushed or deployed, and no other account is tried.
+  const login = checkPersonalAuth();
+  if (!login.ok) fail(login.reason);
+  console.log(`clasp account (personal): ${login.email}`);
+
   const commit = git(['rev-parse', '--short', 'HEAD']);
   const dirty = git(['status', '--porcelain']) !== '';
 
+  // A versioned deployment must be reproducible from a commit, in every environment, and PROD never receives
+  // uncommitted code at all. Pushing DEV HEAD from a dirty tree stays allowed.
+  if (action === 'deploy' || env === 'prod') {
+    if (!commit) fail(`${env.toUpperCase()} deployment requires a git commit.`);
+    if (dirty) fail(`${env.toUpperCase()} deployment requires a clean working tree. Commit or stash your changes.`);
+  }
   if (env === 'prod') {
-    if (!commit) fail('PROD deployment requires a git commit.');
-    if (dirty) fail('PROD deployment requires a clean working tree. Commit or stash your changes.');
     if (!(await confirmProd(config))) fail('PROD deployment cancelled.');
   }
 

@@ -2,7 +2,9 @@
 const SCHEMAS = {
   ROOMMATES: {
     idColumn: 'roommate_id',
-    columns: ['roommate_id', 'member_code', 'name', 'email', 'telegram_username', 'active', 'welcome_sent_at', 'created_at'],
+    // The last eight columns are authentication fields (see Auth.js). They stay blank until an account is provisioned.
+    columns: ['roommate_id', 'member_code', 'name', 'email', 'telegram_username', 'active', 'welcome_sent_at', 'created_at',
+      'username', 'role', 'password_hash', 'must_change_password', 'session_version', 'failed_logins', 'locked_until', 'password_expires_at'],
     required: ['member_code', 'name', 'email', 'active'],
   },
   ROTATION: {
@@ -107,6 +109,27 @@ function assertRoommate_(roommate) {
     fail('telegram_username must be 5-32 letters, digits or underscores, without @.');
   }
   if (typeof roommate.active !== 'boolean') fail('active must be true or false.');
+  assertAuthFields_(roommate);
+}
+
+/** Authentication fields are optional, but when present they must be exactly the shapes Auth.js writes. */
+function assertAuthFields_(record) {
+  const fail = function (message) {
+    throw appError_('ROOMMATE_INVALID', 'ROOMMATES: ' + message);
+  };
+  const isCount = function (value) {
+    return typeof value === 'number' && value >= 0 && value === Math.floor(value) && value <= 1e9;
+  };
+  if (!isBlank_(record.username) && !USERNAME_PATTERN.test(record.username)) fail('username must be 3-32 lower-case letters, digits, . _ or -, starting with a letter.');
+  if (!isBlank_(record.role) && AUTH_ROLES.indexOf(record.role) === -1) fail('role must be ADMIN or ROOMMATE.');
+  if (!isBlank_(record.password_hash) && parsePasswordHash_(record.password_hash) === null) fail('password_hash is not a valid password hash.');
+  if (!isBlank_(record.must_change_password) && typeof record.must_change_password !== 'boolean') fail('must_change_password must be true or false.');
+  if (!isBlank_(record.session_version) && !isCount(record.session_version)) fail('session_version must be a whole number.');
+  if (!isBlank_(record.failed_logins) && !isCount(record.failed_logins)) fail('failed_logins must be a whole number.');
+  ['locked_until', 'password_expires_at'].forEach(function (field) {
+    const value = record[field];
+    if (!isBlank_(value) && !(Object.prototype.toString.call(value) === '[object Date]' && !isNaN(value.getTime()))) fail(field + ' must be a date.');
+  });
 }
 
 /** Only a performed cleaning may carry completed_at; any other outcome must explain itself in notes. */

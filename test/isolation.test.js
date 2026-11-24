@@ -1,7 +1,7 @@
 'use strict';
 
-// Security regression tests for the trust-based V1 model: what the browser can reach, what it can learn,
-// and what it can write.
+// Security regression tests for the signed-in V1 model: what the browser can reach, what it can learn, and what it
+// can write. Identity always comes from a server-signed session, never from the request.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -10,6 +10,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { DEV_SPREADSHEET_ID, PROD_SPREADSHEET_ID, FIXTURES, FakeSpreadsheet, fixtureSheet, loadProject, plain } = require('./support/appsScript');
+const { asSignedIn } = require('./support/appsScript');
 
 const ROOT = path.join(__dirname, '..');
 const read = (file) => fs.readFileSync(path.join(ROOT, file), 'utf8');
@@ -37,8 +38,8 @@ function webApp(spreadsheet, { environment = 'DEV', ...options } = {}) {
   });
 }
 
-const schedule = (project) => plain(project.get('getRotationSchedule')());
-const mark = (project, request) => plain(project.get('markCleaned')(request));
+const schedule = (project) => plain(project.get('getRotationSchedule')(asSignedIn(project)));
+const mark = (project, request) => plain(project.get('markCleaned')(asSignedIn(project, request)));
 const claimFor = (project, overrides = {}) => {
   const { current } = schedule(project);
   return { roommate_id: current.assignee.roommate_id, rotation_id: current.rotation_id, due_at: current.due_at, ...overrides };
@@ -46,24 +47,24 @@ const claimFor = (project, overrides = {}) => {
 
 // What the browser can reach
 
-test('the browser can call exactly the six page functions; maintenance logic is private', () => {
+test('the browser can call exactly the page and sign-in functions; maintenance logic is private', () => {
   const files = backendFiles().filter((file) => file !== WRAPPERS);
-  // The schedule, the cleaning completion, and the three vacation functions, each validated on the server.
-  assert.deepEqual(browserCallable(files), ['cancelVacation', 'doGet', 'getRotationSchedule', 'listVacations', 'markCleaned', 'saveVacation']);
+  // Sign-in, password change and sign-out; then the schedule, cleaning and vacations, each behind a session.
+  assert.deepEqual(browserCallable(files), ['cancelVacation', 'changePassword', 'doGet', 'endVacation', 'getRotationSchedule', 'listVacations', 'markCleaned', 'saveVacation', 'signIn', 'signOut', 'updateVacation']);
   for (const file of backendFiles()) {
     assert.doesNotMatch(read(`src/backend/${file}`), /^(const|let|var) [A-Za-z0-9]+ = (async )?(function|\()/m, `${file}: functions must be declarations`);
   }
 
   const project = loadProject();
-  for (const helper of ['setupDatabase_', 'diagnoseDatabase_', 'onboardRoommate_', 'resolveOverdueTurn_', 'assertMaintenanceAllowed_']) {
+  for (const helper of ['setupDatabase_', 'diagnoseDatabase_', 'onboardRoommate_', 'resolveOverdueTurn_', 'createAccount_', 'resetAccountPassword_', 'assertMaintenanceAllowed_']) {
     assert.equal(typeof project.get(helper), 'function', helper);
   }
   for (const [file, source] of [...backendFiles().map((f) => [f, read(`src/backend/${f}`)])]) {
     if (file === WRAPPERS) continue;
-    assert.doesNotMatch(source, /^function (setupDatabase|diagnoseDatabase|onboardRoommate|resolveOverdueTurn)\(/m, `${file}: maintenance entry points must be private`);
+    assert.doesNotMatch(source, /^function (setupDatabase|diagnoseDatabase|onboardRoommate|resolveOverdueTurn|createAccount|resetAccountPassword)\(/m, `${file}: maintenance entry points must be private`);
   }
   for (const file of fs.readdirSync(path.join(ROOT, 'src', 'frontend'))) {
-    assert.doesNotMatch(read(`src/frontend/${file}`), /setupDatabase|diagnoseDatabase|onboardRoommate|resolveOverdueTurn/, `${file}: the page never calls maintenance`);
+    assert.doesNotMatch(read(`src/frontend/${file}`), /setupDatabase|diagnoseDatabase|onboardRoommate|resolveOverdueTurn|createAccount|resetAccountPassword/, `${file}: the page never calls maintenance`);
   }
 });
 
@@ -77,12 +78,12 @@ test('the separate admin projects are gone, and there is one web app project per
   assert.doesNotMatch(read('README.md'), /push-admin|admin project|dev-admin|prod-admin/i);
 });
 
-test('the temporary editor wrappers are four one-line delegations, and only exist while the web app is owner-only', () => {
+test('the temporary editor wrappers are six one-line delegations, and only exist while the web app is owner-only', () => {
   const file = path.join(ROOT, 'src', 'backend', WRAPPERS);
   if (!fs.existsSync(file)) return; // deleted for release: nothing left to check
   const source = fs.readFileSync(file, 'utf8');
-  assert.deepEqual(browserCallable([WRAPPERS]), ['diagnoseDatabase', 'onboardRoommate', 'resolveOverdueTurn', 'setupDatabase']);
-  for (const name of ['setupDatabase', 'diagnoseDatabase', 'onboardRoommate', 'resolveOverdueTurn']) {
+  assert.deepEqual(browserCallable([WRAPPERS]), ['createAccount', 'diagnoseDatabase', 'onboardRoommate', 'resetAccountPassword', 'resolveOverdueTurn', 'setupDatabase']);
+  for (const name of ['setupDatabase', 'diagnoseDatabase', 'onboardRoommate', 'resolveOverdueTurn', 'createAccount', 'resetAccountPassword']) {
     assert.match(source, new RegExp(`function ${name}\\(\\) {\\n  return ${name}_\\(\\);\\n}`), name);
   }
   assert.match(source, /TEMPORARY/);
@@ -97,7 +98,7 @@ test('even while the wrappers exist, a browser caller is refused: closed window,
     const before = spreadsheet.snapshot();
     const project = webApp(spreadsheet, { maintenance: true, ...options });
     if (options.maintenance === false) project.properties.MAINTENANCE_UNTIL = undefined;
-    for (const name of ['setupDatabase', 'diagnoseDatabase', 'onboardRoommate', 'resolveOverdueTurn']) assert.throws(() => project.get(name)(), pattern, name);
+    for (const name of ['setupDatabase', 'diagnoseDatabase', 'onboardRoommate', 'resolveOverdueTurn', 'createAccount', 'resetAccountPassword']) assert.throws(() => project.get(name)(), pattern, name);
     assert.deepEqual(project.opened, []);
     assert.equal(spreadsheet.snapshot(), before);
   }
@@ -156,7 +157,8 @@ test('deployment access is unchanged: the web app runs as the deployer and is pr
 
 test('the schedule response contains only what the page needs', () => {
   const result = schedule(webApp(database()));
-  assert.deepEqual(Object.keys(result).sort(), ['current', 'generated_at', 'ok', 'roommates', 'upcoming']);
+  assert.deepEqual(Object.keys(result).sort(), ['current', 'generated_at', 'ok', 'roommates', 'upcoming', 'viewer']);
+  assert.deepEqual(Object.keys(result.viewer).sort(), ['must_change_password', 'name', 'role', 'roommate_id']);
   const turnKeys = ['assignee', 'due_at', 'opens_at', 'owner', 'rotation_id', 'skipped', 'swap_id', 'vacation_conflict_id', 'weekend_starts_at'];
   assert.deepEqual(Object.keys(result.current).sort(), [...turnKeys, 'status'].sort());
   for (const turn of result.upcoming) assert.deepEqual(Object.keys(turn).sort(), turnKeys);
@@ -184,7 +186,8 @@ test('every failure shows a fixed message by code, and no internal detail ever r
     ['DATABASE_ENVIRONMENT_MISMATCH', webApp(database({ marker: 'PROD' }))],
     ['TIMEZONE_MISMATCH', webApp(database({ timeZone: 'America/Los_Angeles' }))],
     ['SCHEMA_INVALID', webApp(database({ sheets: { SWAPS: extraColumn } }))],
-    ['ROTATION_EMPTY', webApp(database({ sheets: { ROOMMATES: headerOnly('ROOMMATES'), ROTATION: headerOnly('ROTATION') } }))],
+    ['ROTATION_EMPTY', webApp(database({ sheets: { ROTATION: headerOnly('ROTATION'), CLEANING_LOGS: headerOnly('CLEANING_LOGS'), SWAPS: headerOnly('SWAPS') } }))],
+    ['UNAUTHENTICATED', webApp(database({ sheets: { ROOMMATES: headerOnly('ROOMMATES') } }))],
     ['ROTATION_DATA_INVALID', webApp(database({ sheets: { ROTATION: duplicatePosition } }))],
     ['INTERNAL_ERROR', webApp(broken)],
   ];
@@ -192,7 +195,10 @@ test('every failure shows a fixed message by code, and no internal detail ever r
   const leak = /secret|row 9|Spreadsheet|[0-9a-f]{8}-[0-9a-f]{4}-|ROOMMATES|ROTATION|SWAPS|column|position|due_date|staging|America/;
   for (const [code, project] of reads) {
     const result = schedule(project);
-    assert.deepEqual(result, { ok: false, error: { code, message: messages[code] } }, code);
+    // Only a data problem after a valid sign-in also says who is signed in.
+    assert.deepEqual(Object.keys(result).filter((key) => key !== 'viewer'), ['ok', 'error'], code);
+    assert.equal('viewer' in result, code === 'ROTATION_DATA_INVALID' || code === 'ROTATION_EMPTY', code);
+    assert.deepEqual({ ok: result.ok, error: result.error }, { ok: false, error: { code, message: messages[code] } }, code);
     assert.doesNotMatch(result.error.message, leak, code);
   }
 
@@ -226,7 +232,7 @@ test('an unknown error code can never reach the browser, and every browser-reach
 
   const messages = project.get('PUBLIC_ERROR_MESSAGES');
   // Only maintenance code, which the browser cannot call, uses the other codes.
-  const maintenanceOnly = ['ROOMMATE_INVALID', 'MAINTENANCE_CLOSED', 'ONBOARDING_INVALID', 'ONBOARDING_DUPLICATE', 'ONBOARDING_INCOMPLETE', 'RESOLVE_INVALID', 'TURN_NOT_OVERDUE', 'RESOLVE_MISMATCH'];
+  const maintenanceOnly = ['ROOMMATE_INVALID', 'MAINTENANCE_CLOSED', 'ONBOARDING_INVALID', 'ONBOARDING_DUPLICATE', 'ONBOARDING_INCOMPLETE', 'RESOLVE_INVALID', 'TURN_NOT_OVERDUE', 'RESOLVE_MISMATCH', 'ACCOUNT_INVALID', 'ACCOUNT_EXISTS', 'ACCOUNT_MISSING'];
   for (const file of backendFiles()) {
     for (const [, code] of read(`src/backend/${file}`).matchAll(/appError_\('([A-Z_]+)'/g)) {
       assert.ok(code in messages || maintenanceOnly.includes(code), `${file}: ${code} has no public message`);
@@ -238,19 +244,19 @@ test('an unknown error code can never reach the browser, and every browser-reach
 
 test('markCleaned accepts only the exact formats the page sends, and rejects everything else before locking', () => {
   const project = webApp(database());
-  const good = claimFor(project);
+  const good = asSignedIn(project, claimFor(project));
   const before = project.lock.events.length;
   const bad = [
-    { ...good, roommate_id: 'has space' }, { ...good, roommate_id: 'quote"' }, { ...good, roommate_id: 'semi;colon' }, { ...good, roommate_id: '=SUM(1)' },
-    { ...good, roommate_id: 'x'.repeat(65) }, { ...good, rotation_id: '../etc' }, { ...good, rotation_id: ['a'] }, { ...good, roommate_id: { toString: () => 'abc' } },
+    { ...good, roommate_id: 'has space' }, { ...good, roommate_id: FIXTURES.ROOMMATES[1].roommate_id }, { ...good, token: 5 }, { ...good, token: ['a'] },
+    { ...good, token: { toString: () => good.token } }, { ...good, rotation_id: '../etc' }, { ...good, rotation_id: ['a'] }, { rotation_id: good.rotation_id, due_at: good.due_at },
     { ...good, due_at: 'Jan 13 2026' }, { ...good, due_at: '2026-01-13' }, { ...good, due_at: '2026-01-11T23:00:00' }, { ...good, due_at: '2026-01-11T23:00:00+01:00' },
     { ...good, due_at: '2026-13-45T25:61:61Z' }, { ...good, due_at: 1768172400000 }, { ...good, due_at: null },
     { ...good, role: 'admin' }, { ...good, is_admin: true }, { ...good, constructor: 'x' }, { ...good, __proto__x: 1 },
-    JSON.parse('{"roommate_id":"a","rotation_id":"b","due_at":"2026-01-11T23:00:00.000Z","__proto__":{"admin":true}}'),
+    JSON.parse('{"token":"a","rotation_id":"b","due_at":"2026-01-11T23:00:00.000Z","__proto__":{"admin":true}}'),
     'x'.repeat(1e6), 12, true, [], [good], null, undefined,
   ];
   for (const request of bad) {
-    const result = mark(project, request);
+    const result = plain(project.get('markCleaned')(request)); // sent exactly as is
     assert.deepEqual(result.error.code, 'INVALID_REQUEST', String(JSON.stringify(request)).slice(0, 80));
   }
   assert.equal(project.lock.events.length, before, 'invalid requests never reach the lock or the Sheet');
@@ -259,15 +265,27 @@ test('markCleaned accepts only the exact formats the page sends, and rejects eve
 test('claiming to be an admin, the owner or someone else grants nothing and writes nothing', () => {
   const spreadsheet = database();
   const project = webApp(spreadsheet);
-  const good = claimFor(project);
+  const good = claimFor(project); // { roommate_id: the assignee, ... }, signed in by the mark() helper
+  const signed = asSignedIn(project, good);
   const before = spreadsheet.snapshot();
-  for (const roommate_id of ['admin', 'owner', 'root', FIXTURES.ROOMMATES[1].roommate_id, FIXTURES.ROOMMATES[3].roommate_id]) {
+  // Other roommates' real sessions: still not their turn.
+  for (const roommate_id of [FIXTURES.ROOMMATES[1].roommate_id, FIXTURES.ROOMMATES[3].roommate_id]) {
     assert.equal(mark(project, { ...good, roommate_id }).error.code, 'NOT_YOUR_TURN', roommate_id);
   }
-  assert.equal(mark(project, { ...good, roommate_id: 'owner@example.com' }).error.code, 'INVALID_REQUEST');
+  // Names with no account behind them cannot even get a session.
+  for (const roommate_id of ['admin', 'owner', 'root', 'owner@example.com']) {
+    assert.equal(mark(project, { ...good, roommate_id }).error.code, 'UNAUTHENTICATED', roommate_id);
+  }
+  // Adding a claim to a real session is refused outright.
+  for (const claim of [{ roommate_id: FIXTURES.ROOMMATES[0].roommate_id }, { role: 'ADMIN' }, { is_admin: true }]) {
+    assert.equal(plain(project.get('markCleaned')({ ...signed, ...claim })).error.code, 'INVALID_REQUEST');
+  }
+  // A token re-signed with a guessed secret is not a session.
+  const [version, payload] = signed.token.split('.');
+  assert.equal(plain(project.get('markCleaned')({ ...signed, token: version + '.' + payload + '.' + 'A'.repeat(43) })).error.code, 'UNAUTHENTICATED');
   assert.equal(spreadsheet.snapshot(), before);
-  // The only identity the server acts on is the current assignee, taken from the Sheet, never from the request.
-  assert.equal(mark(project, good).ok, true);
+  // The only identity the server acts on is the session's roommate, and only the current assignee may complete.
+  assert.equal(plain(project.get('markCleaned')(signed)).ok, true);
 });
 
 test('the same request cannot be replayed to record a second cleaning', () => {

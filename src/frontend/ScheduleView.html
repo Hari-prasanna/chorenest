@@ -93,60 +93,43 @@ function renderNote(icon, text) {
   return '<p class="note"><span class="note-icon" aria-hidden="true">' + icon + '</span><span>' + escapeHtml(text) + '</span></p>';
 }
 
+// At most one swap note and one vacation note per turn, in plain words.
 function turnNotes(turn) {
   const notes = [];
   if (turn.assignee.roommate_id !== turn.owner.roommate_id) {
-    notes.push(renderNote('🔄', 'Swapped turn: covering for ' + displayName(turn.owner) + '.'));
-  }
-  if (turn.skipped.length) {
-    notes.push(renderNote('🏖️', joinNames(turn.skipped.map(displayName)) + (turn.skipped.length > 1 ? ' are' : ' is') + ' away.'));
+    notes.push(renderNote('🔄', 'Covering for ' + displayName(turn.owner) + ' (swap).'));
   }
   if (turn.vacation_conflict_id) {
-    notes.push(renderNote('🏖️', 'A vacation has been recorded for this weekend.'));
+    notes.push(renderNote('🏖️', displayName(turn.assignee) + ' is away, so this turn will be skipped.'));
+  } else if (turn.skipped.length) {
+    notes.push(renderNote('🏖️', joinNames(turn.skipped.map(displayName)) + (turn.skipped.length > 1 ? ' are' : ' is') + ' away.'));
   }
   return notes.join('');
 }
 
-// The picked roommate only changes the greeting. A stale id (someone removed or deactivated) counts as no pick.
+const COMING_UP_COUNT = 3;
+
+/**
+ * The next distinct turns for "Coming up": later than the current one, each weekend once, in order. Only the exact
+ * current assignment is left out; the same roommate may appear again on a later weekend.
+ */
+function subsequentTurns(schedule) {
+  const current = schedule.current;
+  const dueAt = Date.parse(current.due_at);
+  const seen = {};
+  return schedule.upcoming.filter(function (turn) {
+    const key = turn.rotation_id + '|' + turn.due_at;
+    if (Date.parse(turn.due_at) <= dueAt || seen[key]) return false;
+    seen[key] = true;
+    return true;
+  }).slice(0, COMING_UP_COUNT);
+}
+
+// The signed-in roommate (from the server) decides which actions the page offers; one missing from the roster gets none.
 function validSelection(schedule, roommateId) {
   return schedule.roommates.some(function (roommate) {
     return roommate.roommate_id === roommateId;
   }) ? roommateId : null;
-}
-
-function personalMessage(schedule, selectedId) {
-  if (!selectedId) return 'Pick your name to see your turn at a glance.';
-  const current = schedule.current;
-  if (current.assignee.roommate_id === selectedId) {
-    if (current.status === 'overdue') return 'Your turn is overdue.';
-    return current.status === 'waiting' ? 'You’re up next.' : 'It’s your turn this weekend.';
-  }
-  if (current.owner.roommate_id === selectedId) return 'Your turn is covered by ' + displayName(current.assignee) + ' (swap).';
-  const next = schedule.upcoming.find(function (turn) {
-    return turn.assignee.roommate_id === selectedId;
-  });
-  return next ? 'Your next turn: ' + formatWeekend(next) + '.' : 'You’re not up in the next few turns.';
-}
-
-function renderIdentityText(schedule, selectedId) {
-  const id = validSelection(schedule, selectedId);
-  const me = schedule.roommates.find(function (roommate) {
-    return roommate.roommate_id === id;
-  });
-  return '<h2 class="greeting">' + (me ? 'Hi, ' + escapeHtml(displayName(me)) + '!' : 'Hi there!') +
-    ' <span aria-hidden="true">👋</span></h2><p class="who-message">' + escapeHtml(personalMessage(schedule, id)) + '</p>';
-}
-
-function renderIdentity(schedule, selectedId) {
-  const id = validSelection(schedule, selectedId);
-  const options = ['<option value="">Just looking</option>'].concat(schedule.roommates.map(function (roommate) {
-    return '<option value="' + escapeHtml(roommate.roommate_id) + '"' + (roommate.roommate_id === id ? ' selected' : '') + '>' +
-      escapeHtml(displayName(roommate)) + '</option>';
-  })).join('');
-  return '<section class="who" aria-label="Greeting"><div class="who-text" id="who-text">' + renderIdentityText(schedule, id) + '</div>' +
-    '<div class="who-picker"><label for="who-select">Who are you?</label>' +
-    '<select class="who-select" id="who-select" data-action="select-roommate">' + options + '</select></div>' +
-    '<p class="who-note">Just for a friendly greeting. This isn’t a login.</p></section>';
 }
 
 function rosterName(schedule, roommateId) {
@@ -156,7 +139,7 @@ function rosterName(schedule, roommateId) {
   return roommate ? displayName(roommate) : 'there';
 }
 
-// The button is only a convenience for the picked roommate. The server decides whether the claim is accepted.
+// The button is offered to the signed-in assignee. The server checks the session and the turn again.
 function markableTurn(schedule, selectedId) {
   const current = schedule.current;
   const open = current.status === 'pending' || current.status === 'overdue';
@@ -242,9 +225,12 @@ function renderUpcomingTurns(turns) {
     '<h2 class="eyebrow section-title" id="upcoming-title">Coming up</h2><ol class="timeline">' + items + '</ol></section>';
 }
 
-function renderSchedule(schedule, selectedId, notice) {
-  return '<div class="layout">' + (notice ? renderNotice(notice) : '') + renderIdentity(schedule, selectedId) +
-    renderCurrentTurn(schedule.current, markableTurn(schedule, selectedId) !== null) + renderUpcomingTurns(schedule.upcoming) +
+// One current-turn card, then "Who's away" (filled in by the page when vacations arrive) and the turns after it.
+function renderSchedule(schedule, selectedId, notice, away) {
+  return '<div class="layout">' + (notice ? renderNotice(notice) : '') +
+    renderCurrentTurn(schedule.current, markableTurn(schedule, selectedId) !== null) +
+    '<div id="away-slot">' + renderAwaySummary(away || { status: 'loading', vacations: [], nowMs: Date.now() }) + '</div>' +
+    renderUpcomingTurns(subsequentTurns(schedule)) +
     '<p class="footnote">Updated ' + escapeHtml(formatTimestamp(schedule.generated_at)) + ' · Times in Berlin</p></div>';
 }
 
@@ -293,8 +279,8 @@ function isValidSchedule(result) {
     Array.isArray(result.roommates) && result.roommates.every(isValidPerson);
 }
 
-function renderResult(result, selectedId, notice) {
+function renderResult(result, selectedId, notice, away) {
   if (result && result.ok === false && result.error) return renderProblem(result.error.code);
-  return isValidSchedule(result) ? renderSchedule(result, selectedId, notice) : renderProblem('UNEXPECTED_RESPONSE');
+  return isValidSchedule(result) ? renderSchedule(result, selectedId, notice, away) : renderProblem('UNEXPECTED_RESPONSE');
 }
 </script>

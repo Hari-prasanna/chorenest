@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { DEV_SPREADSHEET_ID, FIXTURES, FakeSpreadsheet, fixtureSheet, loadProject, plain } = require('./support/appsScript');
+const { asSignedIn } = require('./support/appsScript');
 
 const [ALEX, SAM, JO, KIM] = FIXTURES.ROOMMATES.map((r) => r.roommate_id);
 const [ALEX_SLOT] = FIXTURES.ROTATION.map((s) => s.rotation_id);
@@ -43,10 +44,10 @@ function database(vacations = [], swaps = []) {
 
 const server = (spreadsheet, now = WED, options = {}) =>
   loadProject({ properties: { ENVIRONMENT: 'DEV', SPREADSHEET_ID: DEV_SPREADSHEET_ID }, spreadsheets: [spreadsheet], now, maintenance: false, ...options });
-const schedule = (project) => plain(project.get('getRotationSchedule')());
+const schedule = (project) => plain(project.get('getRotationSchedule')(asSignedIn(project)));
 const mark = (project) => {
   const { current } = schedule(project);
-  return plain(project.get('markCleaned')({ roommate_id: current.assignee.roommate_id, rotation_id: current.rotation_id, due_at: current.due_at }));
+  return plain(project.get('markCleaned')(asSignedIn(project, { roommate_id: current.assignee.roommate_id, rotation_id: current.rotation_id, due_at: current.due_at })));
 };
 const table = (spreadsheet, name) => {
   const [headers, ...rows] = spreadsheet.getSheetByName(name).values;
@@ -176,7 +177,7 @@ test('a vacation entered before the turn was assigned needs no log, and a skippe
   const stale = { roommate_id: ALEX, rotation_id: ALEX_SLOT, due_at: new Date(due(0)).toISOString() };
   spreadsheet.getSheetByName('VACATIONS').values = rowsFor('VACATIONS', [vacation()]);
   assert.equal(cleaner(server(spreadsheet)), SAM);
-  assert.equal(plain(page.get('markCleaned')(stale)).error.code, 'ALREADY_RECORDED');
+  assert.equal(plain(page.get('markCleaned')(asSignedIn(page, stale))).error.code, 'ALREADY_RECORDED');
   assert.equal(logs(spreadsheet).length, 1);
   assert.equal(mark(server(spreadsheet)).ok, true, 'the new current turn can be completed as usual');
 });
@@ -185,7 +186,7 @@ test('completing a turn before the vacation is noticed keeps the completion and 
   const spreadsheet = database();
   const page = server(spreadsheet);
   const request = { roommate_id: ALEX, rotation_id: ALEX_SLOT, due_at: new Date(due(0)).toISOString() };
-  assert.equal(plain(page.get('markCleaned')(request)).ok, true);
+  assert.equal(plain(page.get('markCleaned')(asSignedIn(page, request))).ok, true);
   spreadsheet.getSheetByName('VACATIONS').values = rowsFor('VACATIONS', [vacation()]);
   const after = server(spreadsheet, new Date('2026-01-08T12:00:00Z'));
   assert.equal(cleaner(after), SAM);
