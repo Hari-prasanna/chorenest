@@ -12,6 +12,7 @@
     "test": "node --test \"test/**/*.test.js\"",
     "push:dev": "node scripts/clasp-env.js dev push",
     "deploy:dev": "node scripts/clasp-env.js dev deploy",
+    "push:prod": "node scripts/clasp-env.js prod push",
     "deploy:prod": "node scripts/clasp-env.js prod deploy",
     "test:e2e": "playwright test"
   },

@@ -124,8 +124,7 @@ test('invalid names, emails and Telegram names are refused, and the request stay
   ];
   for (const change of bad) {
     const spreadsheet = database();
-    // A leading "=" is caught by the generic formula check, which has no error code.
-    refuses(spreadsheet, server(spreadsheet, { ...JOHN, ...change }), /ROOMMATES: /, change.name === '=SUM(1)' ? undefined : 'ROOMMATE_INVALID');
+    refuses(spreadsheet, server(spreadsheet, { ...JOHN, ...change }), /ROOMMATES: /, 'ROOMMATE_INVALID');
   }
   for (const missing of ['name', 'email']) {
     const spreadsheet = database();

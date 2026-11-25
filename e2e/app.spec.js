@@ -34,7 +34,7 @@ test.describe('tab navigation', () => {
       await expect(tab(page, name)).toHaveAttribute('aria-current', 'page');
       await expectHealthyLayout(page, `tab ${name}`);
     }
-    expect(await callNames(page), 'no backend calls from switching').toEqual(LOADED);
+    expect(await callNames(page), 'switching only loads Swaps and History, once each').toEqual([...LOADED, 'listSwaps', 'listCleaningHistory']);
     await shot(page, testInfo, 'schedule-light');
     expect(problems).toEqual([]);
   });
@@ -64,21 +64,6 @@ test.describe('tab navigation', () => {
     expect(await calls(page, 'getRotationSchedule'), 'tapping tabs sends nothing').toHaveLength(1);
     expect(problems).toEqual([]);
   });
-
-  test('swaps and history are honest work-in-progress pages', async ({ page }, testInfo) => {
-    const { problems } = await openApp(page);
-    for (const [name, title] of [['swaps', 'Swaps'], ['history', 'History']]) {
-      await tab(page, name).click();
-      await expect(panel(page, name)).toContainText(title);
-      await expect(panel(page, name)).toContainText('Work in progress');
-      await expect(panel(page, name).locator('button, input, select, form, a')).toHaveCount(0);
-      await expectHealthyLayout(page, name);
-      await shot(page, testInfo, name);
-    }
-    expect(await callNames(page)).toEqual(LOADED);
-    expect(problems).toEqual([]);
-  });
-
 
   test('coming back to a stale schedule fetches a fresh copy, a recent one does not', async ({ page }) => {
     await openApp(page);
@@ -714,5 +699,185 @@ test.describe('sign in and sessions', () => {
     expect((await calls(page, 'signOut'))[0].args[0]).toEqual({ token: 'token-Hari' });
     await shot(page, testInfo, 'signed-out');
     expect(problems).toEqual([]);
+  });
+});
+
+// Admin section: opened from Profile, only for ADMIN
+
+async function openHousehold(page) {
+  await page.locator('#profile-button').click();
+  await page.getByRole('button', { name: 'Manage household' }).click();
+  await expect(page.getByRole('heading', { name: 'Household' })).toBeVisible();
+}
+
+test.describe('admin section', () => {
+  test('roommates never see it; an admin opens it from Profile and sees every account', async ({ page }, testInfo) => {
+    await openApp(page); // Jijo
+    await page.locator('#profile-button').click();
+    await expect(page.getByRole('button', { name: 'Manage household' })).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    expect(await calls(page, 'adminListAccounts')).toEqual([]);
+
+    const admin = await page.context().browser().newPage({ baseURL: testInfo.project.use.baseURL, viewport: page.viewportSize() });
+    const { problems } = await openApp(admin, { as: HARI });
+    await openHousehold(admin);
+    const cards = admin.locator('.account-card');
+    await expect(cards).toHaveCount(3);
+    await expect(cards.nth(0)).toContainText('Hari (you)');
+    await expect(cards.nth(0).getByRole('button', { name: 'Disable sign-in' })).toHaveCount(0);
+    await expect(cards.nth(1)).toContainText('Waiting for first sign-in');
+    await expect(cards.nth(2).getByRole('button', { name: 'Create account' })).toBeVisible();
+    await expect(admin.locator('.tab[aria-current="page"]')).toHaveCount(0);
+    expect((await calls(admin, 'adminListAccounts'))[0].args[0]).toEqual({ token: 'token-Hari' });
+    await expectHealthyLayout(admin, 'admin list');
+    await shot(admin, testInfo, 'admin-list');
+    await admin.getByRole('button', { name: 'Back to the schedule' }).click();
+    await expect(admin.locator('.hero')).toBeVisible();
+    expect(problems).toEqual([]);
+    await admin.close();
+  });
+
+  test('adding a roommate shows the temporary password once; Done removes it from the page', async ({ page }, testInfo) => {
+    const { problems } = await openApp(page, { as: HARI });
+    await openHousehold(page);
+    await page.getByRole('button', { name: /Add roommate/ }).click();
+    const dialog = page.locator('#admin-dialog');
+    await expect(dialog.getByLabel('Name', { exact: true })).toBeFocused();
+    await dialog.getByLabel('Name', { exact: true }).fill('Kim Lee');
+    await dialog.getByLabel('Email').fill('kim@example.com');
+    await dialog.getByLabel('Username', { exact: true }).fill('kim');
+    await dialog.getByLabel(/Admin/).check();
+    const box = await dialog.boundingBox();
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize().width + 0.5);
+    await shot(page, testInfo, 'admin-add');
+    await dialog.getByRole('button', { name: 'Add and create account' }).click();
+    await expect(dialog.locator('.temp-password')).toHaveText('Xy7kP3qRt9mWb2Nc');
+    await expect(dialog.getByRole('button', { name: 'Done' })).toBeFocused();
+    await shot(page, testInfo, 'admin-temp-password');
+    const [add] = await calls(page, 'adminAddRoommate');
+    expect(add.args[0]).toEqual({ token: 'token-Hari', name: 'Kim Lee', email: 'kim@example.com', telegram: '', username: 'kim', role: 'ADMIN' });
+    await dialog.getByRole('button', { name: 'Done' }).click();
+    await expect(dialog).toBeHidden();
+    await expect(page.getByText('Xy7kP3qRt9mWb2Nc')).toHaveCount(0);
+    expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain('Xy7kP3qRt9mWb2Nc');
+    await expect(page.locator('#panel-admin .notice')).toContainText('Kim Lee was added to the rotation.');
+    expect(problems).toEqual([]);
+  });
+
+  test('a password reset is confirmed first, and Escape also wipes the one-time password', async ({ page }) => {
+    await openApp(page, { as: HARI });
+    await openHousehold(page);
+    await page.locator('.account-card').nth(1).getByRole('button', { name: 'New temporary password' }).click();
+    const dialog = page.locator('#admin-dialog');
+    await expect(dialog.getByRole('heading', { name: 'New temporary password for Jijo?' })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
+    await dialog.getByRole('button', { name: 'Create temporary password' }).click();
+    await expect(dialog.locator('.temp-password')).toBeVisible();
+    expect((await calls(page, 'adminResetSignIn'))[0].args[0]).toEqual({ token: 'token-Hari', roommate_id: 'id-Jijo' });
+    await page.keyboard.press('Escape');
+    await expect(dialog).toBeHidden();
+    expect(await dialog.innerHTML()).toBe('');
+  });
+
+  test('when the server refuses because you are no longer an admin, the section closes', async ({ page }) => {
+    await openApp(page, { as: HARI, responses: { adminDisableSignIn: { ok: false, error: { code: 'FORBIDDEN', message: 'x' } } } });
+    await openHousehold(page);
+    await page.locator('.account-card').nth(1).getByRole('button', { name: 'Disable sign-in' }).click();
+    // Meanwhile another admin made Hari a roommate: from now on the server reports that.
+    await page.evaluate(() => {
+      window.__mock.viewer = { ...window.__mock.viewer, role: 'ROOMMATE' };
+    });
+    await page.locator('#admin-dialog').getByRole('button', { name: 'Disable sign-in' }).click();
+    await expect(page.locator('#panel-admin')).toBeHidden();
+    await expect(page.locator('.hero')).toBeVisible();
+    await expect(page.locator('#profile-button')).toContainText('Roommate');
+  });
+});
+
+test.describe('history', () => {
+  test('the History tab shows the latest cleanings, newest first, read-only', async ({ page }, testInfo) => {
+    const { problems } = await openApp(page);
+    await expect(page.locator('.hero')).toBeVisible();
+    await tab(page, 'history').click();
+    const items = panel(page, 'history').locator('.timeline-item');
+    await expect(items).toHaveCount(3);
+    await expect(items.nth(0)).toContainText('Jijo');
+    await expect(items.nth(0)).toContainText('Cleaned');
+    await expect(items.nth(1)).toContainText('Skipped: away');
+    await expect(items.nth(2)).toContainText('Closed by the app owner');
+    await expect(panel(page, 'history').locator('button, input, form, select')).toHaveCount(0);
+    expect((await calls(page, 'listCleaningHistory'))[0].args[0]).toEqual({ token: 'token-Jijo' });
+    await expectHealthyLayout(page, 'history');
+    await shot(page, testInfo, 'history');
+    expect(problems).toEqual([]);
+  });
+});
+
+test.describe('swaps', () => {
+  test('the Swaps tab shows the request asked of me and the explanation', async ({ page }, testInfo) => {
+    const { problems } = await openApp(page); // Jijo
+    await tab(page, 'swaps').click();
+    const swaps = panel(page, 'swaps');
+    await expect(swaps).toContainText('Pending requests change nothing');
+    await expect(swaps.locator('.account-card')).toHaveCount(1);
+    await expect(swaps.locator('.account-card')).toContainText('Hari');
+    await expect(swaps.locator('.account-card')).toContainText('You clean');
+    await expect(swaps.getByRole('button', { name: 'Accept' })).toBeVisible();
+    await expect(swaps.getByRole('button', { name: 'Decline' })).toBeVisible();
+    await expect(swaps.getByRole('button', { name: 'Cancel request' })).toHaveCount(0);
+    expect((await calls(page, 'listSwaps'))[0].args[0]).toEqual({ token: 'token-Jijo' });
+    await expectHealthyLayout(page, 'swaps');
+    await shot(page, testInfo, 'swaps');
+    expect(problems).toEqual([]);
+  });
+
+  test('requesting a swap previews the two weekends, then sends the choice and says nothing changes yet', async ({ page }, testInfo) => {
+    const { problems } = await openApp(page);
+    await tab(page, 'swaps').click();
+    await panel(page, 'swaps').getByRole('button', { name: 'Request a swap' }).click();
+    const dialog = page.locator('#swap-dialog');
+    await expect(dialog.getByLabel('Your turn to give away')).toBeFocused();
+    await dialog.getByLabel('Their turn to take').selectOption({ index: 0 });
+    await expect(dialog.locator('.swap-preview')).toContainText('You clean');
+    await expect(dialog.locator('.swap-preview')).toContainText('Nothing changes until Arun accepts.');
+    const box = await dialog.boundingBox();
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize().width + 0.5);
+    await shot(page, testInfo, 'swap-request');
+    await dialog.getByRole('button', { name: 'Send request' }).click();
+    await expect(dialog).toBeHidden();
+    await expect(panel(page, 'swaps').locator('.notice')).toContainText('Nothing changes until they accept.');
+    const [sent] = await calls(page, 'requestSwap');
+    expect(Object.keys(sent.args[0]).sort()).toEqual(['partner_id', 'their_due_at', 'token', 'your_due_at']);
+    expect(sent.args[0].partner_id).toBe('id-Arun');
+    expect(problems).toEqual([]);
+  });
+
+  test('accepting asks first, then refreshes the schedule without a loading state', async ({ page }) => {
+    const { problems } = await openApp(page);
+    await expect(page.locator('.hero')).toBeVisible();
+    await tab(page, 'swaps').click();
+    await panel(page, 'swaps').getByRole('button', { name: 'Accept' }).click();
+    const dialog = page.locator('#swap-dialog');
+    await expect(dialog.getByRole('heading', { name: 'Accept Hari’s swap?' })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Not now' })).toBeFocused();
+    await dialog.getByRole('button', { name: 'Accept swap' }).click();
+    await expect(dialog).toBeHidden();
+    await expect(panel(page, 'swaps').locator('.notice')).toContainText('Swap accepted');
+    expect((await calls(page, 'acceptSwap'))[0].args[0]).toEqual({ token: 'token-Jijo', swap_id: 'swap-1' });
+    await expect.poll(async () => (await calls(page, 'getRotationSchedule')).length).toBe(2);
+    await expect(page.locator('.skeleton-hero')).toHaveCount(0);
+    expect(problems).toEqual([]);
+  });
+
+  test('a stale request is explained in plain words and the list reloads', async ({ page }) => {
+    await openApp(page, { responses: { acceptSwap: { ok: false, error: { code: 'SWAP_STALE', message: 'Server detail' } } } });
+    await tab(page, 'swaps').click();
+    await panel(page, 'swaps').getByRole('button', { name: 'Accept' }).click();
+    await page.locator('#swap-dialog').getByRole('button', { name: 'Accept swap' }).click();
+    await expect(panel(page, 'swaps').locator('.notice')).toContainText('so this swap no longer fits');
+    await expect(page.getByText('Server detail')).toHaveCount(0);
+    expect(await calls(page, 'listSwaps')).toHaveLength(2);
   });
 });

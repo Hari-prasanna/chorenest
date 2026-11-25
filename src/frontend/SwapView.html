@@ -1,0 +1,195 @@
+<script>
+// The Swaps tab: your incoming, outgoing and accepted swaps, and the request form. Data in, HTML strings out; no DOM
+// access and no server calls. Messages are fixed texts here, so no server detail can reach the screen. The server
+// decides who may do what from the session; the buttons below only follow what it reported.
+const SWAP_STATUS = {
+  pending: { label: 'Waiting for an answer', tone: 'wait' },
+  accepted: { label: 'Accepted', tone: 'ok' },
+};
+const SWAP_MESSAGES = {
+  SWAP_SELF: 'Pick another roommate’s turn to swap with.',
+  SWAP_TURN_NOT_FOUND: 'One of those turns isn’t on the schedule any more. Here’s the latest.',
+  SWAP_TURN_STARTED: 'That weekend has already started, so the turn can’t be swapped.',
+  SWAP_TURN_TAKEN: 'One of those turns is already part of another swap.',
+  SWAP_PARTNER_UNAVAILABLE: 'One of you is away or inactive that weekend, so the swap wouldn’t work.',
+  SWAP_NOT_FOUND: 'That swap request isn’t there any more.',
+  SWAP_NOT_YOURS: 'That swap request isn’t yours to change.',
+  SWAP_NOT_PENDING: 'That request was already answered or cancelled.',
+  SWAP_STALE: 'The schedule changed (for example, someone planned a vacation), so this swap no longer fits. It stays open until it is declined or cancelled.',
+  BUSY: 'Someone else is saving right now. Try again in a moment.',
+  INVALID_REQUEST: 'That didn’t look right, so nothing was saved.',
+  REQUEST_FAILED: 'We couldn’t confirm that it saved. Check the list before trying again.',
+};
+const SWAP_FALLBACK = 'Something went wrong, so nothing was changed. Try again in a moment.';
+// Refusals that mean the page's copy is out of date: the dialog closes and the list is reloaded.
+const SWAP_REFRESH_CODES = ['SWAP_TURN_NOT_FOUND', 'SWAP_TURN_STARTED', 'SWAP_TURN_TAKEN', 'SWAP_PARTNER_UNAVAILABLE', 'SWAP_NOT_FOUND', 'SWAP_NOT_PENDING', 'SWAP_STALE'];
+const SWAP_EXPLANATION = 'Pending requests change nothing: cleaning stays with whoever it is scheduled for until the other roommate accepts. ' +
+  'A swap trades just those two weekends; the rotation order stays the same.';
+
+function swapMessage(code) {
+  return Object.prototype.hasOwnProperty.call(SWAP_MESSAGES, code) ? SWAP_MESSAGES[code] : SWAP_FALLBACK;
+}
+
+function swapWeekend(startsAt, dueAt) {
+  return formatWeekend({ weekend_starts_at: startsAt, due_at: dueAt });
+}
+
+function swapPartnerName(swap) {
+  return swap.partner && swap.partner.name ? swap.partner.name : 'Someone';
+}
+
+/** What the swap means for the viewer, weekend by weekend. */
+function renderSwapExchange(partner, takeWeekend, giveWeekend) {
+  return '<p class="swap-line"><strong>You clean</strong> ' + escapeHtml(takeWeekend) + ' <span class="account-hint">(' + escapeHtml(partner) + '’s turn)</span></p>' +
+    '<p class="swap-line"><strong>' + escapeHtml(partner) + ' cleans</strong> ' + escapeHtml(giveWeekend) + ' <span class="account-hint">(your turn)</span></p>';
+}
+
+function renderSwapActions(swap) {
+  const id = escapeHtml(swap.swap_id);
+  if (swap.status === 'pending' && swap.direction === 'incoming') {
+    return '<div class="account-actions">' +
+      '<button class="button button-small" type="button" data-action="swap-accept" data-swap-id="' + id + '">Accept</button>' +
+      '<button class="button button-small button-quiet" type="button" data-action="swap-decline" data-swap-id="' + id + '">Decline</button></div>';
+  }
+  if (swap.status === 'pending') {
+    return '<div class="account-actions"><button class="button button-small button-quiet" type="button" data-action="swap-cancel" data-swap-id="' + id + '">Cancel request</button></div>';
+  }
+  return '';
+}
+
+function renderSwapCard(swap) {
+  const partner = swapPartnerName(swap);
+  const status = SWAP_STATUS[swap.status] || SWAP_STATUS.pending;
+  const warning = swap.not_applied
+    ? '<p class="form-error" role="status">Not in effect: someone is away or inactive that weekend, so the usual turns stand. Nothing else changed.</p>'
+    : '';
+  return '<li class="card account-card"><div class="account-head">' + avatar(swap.partner || { roommate_id: '', name: partner }, 'md') +
+    '<div class="account-text"><p class="name">' + escapeHtml(partner) + '</p>' +
+    '<p class="account-badges"><span class="badge badge-account tone-' + (swap.not_applied ? 'warn' : status.tone) + '">' +
+    escapeHtml(swap.not_applied ? 'Not in effect' : status.label) + '</span></p></div></div>' +
+    renderSwapExchange(partner, swapWeekend(swap.their_weekend_starts_at, swap.their_due_at), swapWeekend(swap.your_weekend_starts_at, swap.your_due_at)) +
+    warning + renderSwapActions(swap) + '</li>';
+}
+
+function renderSwapGroup(title, swaps) {
+  return swaps.length
+    ? '<section aria-label="' + escapeHtml(title) + '"><h3 class="eyebrow section-title">' + escapeHtml(title) + '</h3><ul class="account-list">' + swaps.map(renderSwapCard).join('') + '</ul></section>'
+    : '';
+}
+
+/** Turns the viewer can give away, and turns they could take, from the server's list of swappable turns. */
+function swapChoices(turns, viewerId) {
+  return {
+    mine: turns.filter(function (turn) {
+      return turn.owner.roommate_id === viewerId;
+    }),
+    theirs: turns.filter(function (turn) {
+      return turn.owner.roommate_id !== viewerId;
+    }),
+  };
+}
+
+/** view: { status: 'loading' | 'ready' | 'error' | 'network', swaps, turns, viewerId, notice } */
+function renderSwapsPanel(view) {
+  let body;
+  let canRequest = false;
+  if (view.status === 'ready') {
+    const choices = swapChoices(view.turns, view.viewerId);
+    canRequest = choices.mine.length > 0 && choices.theirs.length > 0;
+    const incoming = view.swaps.filter(function (swap) {
+      return swap.status === 'pending' && swap.direction === 'incoming';
+    });
+    const outgoing = view.swaps.filter(function (swap) {
+      return swap.status === 'pending' && swap.direction === 'outgoing';
+    });
+    const accepted = view.swaps.filter(function (swap) {
+      return swap.status === 'accepted';
+    });
+    body = view.swaps.length
+      ? renderSwapGroup('Asked of you', incoming) + renderSwapGroup('You asked', outgoing) + renderSwapGroup('Accepted', accepted)
+      : '<section class="card state state-compact"><span class="state-icon" aria-hidden="true">🔄</span><h3>No swaps yet</h3>' +
+        '<p>' + (canRequest ? 'Ask a roommate to trade a cleaning weekend.' : 'There is no turn you could swap right now.') + '</p></section>';
+  } else if (view.status === 'error' || view.status === 'network') {
+    body = '<section class="card state state-compact"><span class="state-icon" aria-hidden="true">🔄</span><h3>Couldn’t load the swaps</h3><p>' +
+      (view.status === 'network' ? 'Check your connection and try again.' : 'Try again in a moment.') + '</p>' +
+      '<button class="button" type="button" data-action="swap-retry">Try again</button></section>';
+  } else {
+    body = '<div role="status"><p class="eyebrow">Loading swaps…</p><div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div></div>';
+  }
+  return '<div class="layout"><div class="vacation-top"><div><h2 class="panel-title">Swaps</h2>' +
+    '<p class="vacation-intro">' + escapeHtml(SWAP_EXPLANATION) + '</p></div>' +
+    (canRequest ? '<button class="button" type="button" data-action="swap-request">Request a swap</button>' : '') + '</div>' +
+    (view.notice ? renderNotice(view.notice) : '') + body + '</div>';
+}
+
+function turnOptionLabel(turn, withName) {
+  return (withName ? (turn.owner.name || 'Someone') + ' · ' : '') + swapWeekend(turn.weekend_starts_at, turn.due_at);
+}
+
+function renderTurnSelect(id, label, turns, withName, chosen, autofocus) {
+  const options = turns.map(function (turn) {
+    return '<option value="' + escapeHtml(turn.due_at) + '"' + (turn.due_at === chosen ? ' selected' : '') + '>' + escapeHtml(turnOptionLabel(turn, withName)) + '</option>';
+  }).join('');
+  return '<div class="field"><label for="' + id + '">' + label + '</label>' +
+    '<select class="text-input" id="' + id + '"' + (autofocus ? ' autofocus' : '') + '>' + options + '</select></div>';
+}
+
+/** The two weekends that would change hands, in words. Replaced on its own when a choice changes. */
+function renderSwapPreview(mine, theirs, viewerName) {
+  if (!mine || !theirs) return '';
+  const partner = theirs.owner.name || 'Someone';
+  return '<div class="swap-preview" role="status">' +
+    '<p class="swap-line"><strong>You clean</strong> ' + escapeHtml(swapWeekend(theirs.weekend_starts_at, theirs.due_at)) + ' <span class="account-hint">instead of ' + escapeHtml(partner) + '</span></p>' +
+    '<p class="swap-line"><strong>' + escapeHtml(partner) + ' cleans</strong> ' + escapeHtml(swapWeekend(mine.weekend_starts_at, mine.due_at)) + ' <span class="account-hint">instead of ' + escapeHtml(viewerName || 'you') + '</span></p>' +
+    '<p class="who-note">Nothing changes until ' + escapeHtml(partner) + ' accepts.</p></div>';
+}
+
+/** draft: { mine, theirs } as due_at values; choices from swapChoices. */
+function renderSwapForm(choices, draft, viewerName) {
+  const mine = choices.mine.filter(function (turn) { return turn.due_at === draft.mine; })[0] || choices.mine[0];
+  const theirs = choices.theirs.filter(function (turn) { return turn.due_at === draft.theirs; })[0] || choices.theirs[0];
+  return '<div class="dialog-body dialog-scroll"><h2 id="swap-title">Request a swap</h2>' +
+    renderTurnSelect('swap-mine', 'Your turn to give away', choices.mine, false, mine.due_at, true) +
+    renderTurnSelect('swap-theirs', 'Their turn to take', choices.theirs, true, theirs.due_at, false) +
+    '<div id="swap-preview-slot">' + renderSwapPreview(mine, theirs, viewerName) + '</div>' +
+    '<div class="dialog-actions"><button class="button" type="button" data-action="swap-send">Send request</button>' +
+    '<button class="button button-quiet" type="button" data-action="swap-close">Not now</button></div></div>';
+}
+
+const SWAP_CONFIRM = {
+  accept: { title: 'Accept PARTNER’s swap?', text: 'Cleaning changes for just these two weekends.', button: 'Accept swap' },
+  decline: { title: 'Decline PARTNER’s swap?', text: 'Nothing changes. They’ll see it was declined.', button: 'Decline swap' },
+  cancel: { title: 'Cancel your request to PARTNER?', text: 'Nothing changes.', button: 'Cancel request' },
+};
+
+function renderSwapConfirm(kind, swap) {
+  const copy = SWAP_CONFIRM[kind];
+  const partner = swapPartnerName(swap);
+  const exchange = kind === 'accept'
+    ? renderSwapExchange(partner, swapWeekend(swap.their_weekend_starts_at, swap.their_due_at), swapWeekend(swap.your_weekend_starts_at, swap.your_due_at))
+    : '';
+  return '<div class="dialog-body"><h2 id="swap-title">' + escapeHtml(copy.title.replace('PARTNER', partner)) + '</h2>' + exchange +
+    '<p>' + escapeHtml(copy.text) + '</p>' +
+    '<div class="dialog-actions"><button class="button" type="button" data-action="swap-confirm">' + escapeHtml(copy.button) + '</button>' +
+    '<button class="button button-quiet" type="button" data-action="swap-close" autofocus>Not now</button></div></div>';
+}
+
+function renderSwapBusy() {
+  return '<div class="dialog-body" role="status" aria-busy="true"><p class="auth-status"><span class="spinner" aria-hidden="true"></span>Saving…</p></div>';
+}
+
+function isValidSwapList(result) {
+  const person = function (value) {
+    return Boolean(value) && typeof value.roommate_id === 'string';
+  };
+  return Boolean(result) && result.ok === true && Array.isArray(result.swaps) && Array.isArray(result.turns) &&
+    result.swaps.every(function (swap) {
+      return Boolean(swap) && typeof swap.swap_id === 'string' && typeof swap.status === 'string' && typeof swap.direction === 'string' &&
+        person(swap.partner) && !isNaN(Date.parse(swap.your_due_at)) && !isNaN(Date.parse(swap.their_due_at)) &&
+        !isNaN(Date.parse(swap.your_weekend_starts_at)) && !isNaN(Date.parse(swap.their_weekend_starts_at));
+    }) &&
+    result.turns.every(function (turn) {
+      return Boolean(turn) && person(turn.owner) && !isNaN(Date.parse(turn.due_at)) && !isNaN(Date.parse(turn.weekend_starts_at));
+    });
+}
+</script>

@@ -55,25 +55,48 @@ function takeAccountRequest_(withUsername) {
   return request;
 }
 
-/** The one active roommate with this member code, checked for the requested action. */
+/**
+ * The one active roommate this request is about (by request.roommateId from the admin page, or by
+ * request.memberCode from the editor), checked for the action: 'create' needs no account yet and a free username;
+ * 'reset' needs an account (it also re-enables one whose sign-in was disabled).
+ */
 function accountTarget_(roommates, request, action) {
   const matches = roommates.filter(function (roommate) {
-    return String(roommate.member_code || '').toUpperCase() === request.memberCode;
+    return request.roommateId ? roommate.roommate_id === request.roommateId : String(roommate.member_code || '').toUpperCase() === request.memberCode;
   });
-  if (matches.length !== 1) throw invalidAccount_('No single roommate has member code ' + request.memberCode + '.');
+  const label = request.memberCode || 'that roommate';
+  if (matches.length !== 1) throw invalidAccount_('No single roommate matches ' + label + '.');
   const roommate = matches[0];
-  if (roommate.active !== true) throw invalidAccount_(request.memberCode + ' is deactivated.');
-  const hasAccount = !isBlank_(roommate.username) || !isBlank_(roommate.password_hash);
+  if (roommate.active !== true) throw invalidAccount_(label + ' is deactivated.');
   if (action === 'create') {
-    if (hasAccount) throw appError_('ACCOUNT_EXISTS', request.memberCode + ' already has an account. Use resetAccountPassword instead. Nothing was changed.');
-    const taken = roommates.some(function (other) {
-      return other !== roommate && String(other.username || '').toLowerCase() === request.username;
-    });
-    if (taken) throw invalidAccount_('The username ' + request.username + ' is already taken.');
-  } else if (!hasAccount || !USERNAME_PATTERN.test(String(roommate.username)) || AUTH_ROLES.indexOf(roommate.role) === -1) {
-    throw appError_('ACCOUNT_MISSING', request.memberCode + ' has no complete account. Use createAccount instead. Nothing was changed.');
+    if (hasAccount_(roommate)) throw appError_('ACCOUNT_EXISTS', label + ' already has an account. Reset its password instead. Nothing was changed.');
+    if (usernameTaken_(roommates, request.username, roommate.roommate_id)) {
+      throw appError_('USERNAME_TAKEN', 'The username ' + request.username + ' is already taken. Nothing was changed.');
+    }
+  } else if (!hasAccount_(roommate) || !USERNAME_PATTERN.test(String(roommate.username)) || AUTH_ROLES.indexOf(roommate.role) === -1) {
+    throw appError_('ACCOUNT_MISSING', label + ' has no complete account. Create one instead. Nothing was changed.');
   }
   return roommate;
+}
+
+function hasAccount_(roommate) {
+  return !isBlank_(roommate.username) || !isBlank_(roommate.password_hash);
+}
+
+function usernameTaken_(roommates, username, exceptRoommateId) {
+  return roommates.some(function (other) {
+    return other.roommate_id !== exceptRoommateId && String(other.username || '').toLowerCase() === username;
+  });
+}
+
+/** The account fields for a new or reset temporary password; a new account also gets its username and role. */
+function temporaryAccountChanges_(roommate, passwordHash, now, account) {
+  const changes = resetPasswordChanges_(roommate, passwordHash, now);
+  if (account) {
+    changes.username = account.username;
+    changes.role = account.role;
+  }
+  return changes;
 }
 
 /**
@@ -88,11 +111,7 @@ function provisionAccount_(action) {
 
   return withAuthLock_(function () {
     const roommate = accountTarget_(SheetDb.list('ROOMMATES'), request, action);
-    const changes = resetPasswordChanges_(roommate, passwordHash, new Date());
-    if (action === 'create') {
-      changes.username = request.username;
-      changes.role = request.role;
-    }
+    const changes = temporaryAccountChanges_(roommate, passwordHash, new Date(), action === 'create' ? request : null);
     writeAuthChanges_(roommate.roommate_id, changes);
     const properties = PropertiesService.getScriptProperties();
     ACCOUNT_REQUEST_KEYS.forEach(function (key) {

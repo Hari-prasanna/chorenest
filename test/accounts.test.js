@@ -98,7 +98,7 @@ test('bad requests change nothing in the Sheet, and the temporary password is al
     ['malformed member code', { ...good, ACCOUNT_MEMBER_CODE: 'alex' }, 'ACCOUNT_INVALID'],
     ['deactivated roommate', { ...good, ACCOUNT_MEMBER_CODE: 'JOX-003', ACCOUNT_USERNAME: 'jo' }, 'ACCOUNT_INVALID'],
     ['already has an account', { ...good, ACCOUNT_MEMBER_CODE: 'SMA-002', ACCOUNT_USERNAME: 'sammy' }, 'ACCOUNT_EXISTS'],
-    ['username taken', { ...good, ACCOUNT_USERNAME: 'SAM' }, 'ACCOUNT_INVALID'],
+    ['username taken', { ...good, ACCOUNT_USERNAME: 'SAM' }, 'USERNAME_TAKEN'],
     ['bad username', { ...good, ACCOUNT_USERNAME: '1x' }, 'ACCOUNT_INVALID'],
     ['bad role', { ...good, ACCOUNT_ROLE: 'OWNER' }, 'ACCOUNT_INVALID'],
     ['no temporary password', { ...good, ACCOUNT_TEMP_PASSWORD: '' }, 'ACCOUNT_INVALID'],
@@ -180,7 +180,7 @@ test('the slow hash runs outside the script lock, and the checks are repeated un
   };
   const result = run(project, 'createAccount');
   assert.equal(underLock, 0);
-  assert.equal(result.code, 'ACCOUNT_INVALID', 'the re-check under the lock sees the new conflict');
+  assert.equal(result.code, 'USERNAME_TAKEN', 'the re-check under the lock sees the new conflict');
   assert.equal(row(project).username, '');
 });
 

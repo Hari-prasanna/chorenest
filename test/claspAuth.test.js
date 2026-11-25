@@ -70,6 +70,7 @@ test('push and deploy stop with the login instruction when personal credentials 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chorenest-noauth-'));
   try {
     for (const entry of ['scripts', 'src', 'package.json']) fs.cpSync(path.join(ROOT, entry), path.join(dir, entry), { recursive: true });
+    fs.rmSync(path.join(dir, 'src', 'backend', 'EditorTools.js'), { force: true }); // a PROD deploy refuses the wrappers first
     for (const env of ['DEV', 'PROD']) {
       fs.writeFileSync(path.join(dir, `.clasp.${env.toLowerCase()}.json`), JSON.stringify({ environment: env, scriptId: `FAKE${env}${env}${env}`, rootDir: 'src' }));
     }

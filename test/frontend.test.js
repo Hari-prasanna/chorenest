@@ -85,12 +85,42 @@ function loadFrontend({ storage = new Map(), systemDark = false, storageBlocked 
   const authScreen = Object.assign(element(), { hidden: false });
   const mainContent = Object.assign(element(), { hidden: true });
   const input = (type = 'text') => Object.assign(element(), { value: '', type, focused: 0, focus() { this.focused++; } });
+  const adminDialog = element();
+  adminDialog.open = false;
+  adminDialog.showModal = function () {
+    this.open = true;
+  };
+  adminDialog.close = function () {
+    this.open = false;
+  };
   const authInputs = {
     'sign-in-username': input(),
     'sign-in-password': input('password'),
     'current-password': input('password'),
     'new-password': input('password'),
     'repeat-password': input('password'),
+  };
+  const swapDialog = element();
+  swapDialog.open = false;
+  swapDialog.showModal = function () {
+    this.open = true;
+  };
+  swapDialog.close = function () {
+    this.open = false;
+  };
+  const swapInputs = {
+    'swap-mine': input(),
+    'swap-theirs': input(),
+    'swap-preview-slot': element(),
+  };
+  const adminInputs = {
+    'admin-name': input(),
+    'admin-email': input(),
+    'admin-telegram': input(),
+    'admin-username': input(),
+    'admin-role-admin': Object.assign(input('radio'), { checked: false }),
+    'temp-password': Object.assign(element(), { textContent: '' }),
+    'copy-status': Object.assign(element(), { textContent: '' }),
   };
   const tabs = element();
   const tabButtons = ['schedule', 'vacation', 'swaps', 'history'].map((name) => {
@@ -105,6 +135,7 @@ function loadFrontend({ storage = new Map(), systemDark = false, storageBlocked 
     vacation: Object.assign(element(), { hidden: true }),
     swaps: Object.assign(element(), { hidden: true }),
     history: Object.assign(element(), { hidden: true }),
+    admin: Object.assign(element(), { hidden: true }),
   };
   const awaySlot = element();
   const startInput = Object.assign(element(), { value: '' });
@@ -145,7 +176,8 @@ function loadFrontend({ storage = new Map(), systemDark = false, storageBlocked 
       return this;
     },
   };
-  for (const name of ['getRotationSchedule', 'markCleaned', 'listVacations', 'saveVacation', 'cancelVacation', 'updateVacation', 'endVacation', 'signIn', 'changePassword', 'signOut']) {
+  for (const name of ['getRotationSchedule', 'markCleaned', 'listVacations', 'saveVacation', 'cancelVacation', 'updateVacation', 'endVacation', 'signIn', 'changePassword', 'signOut',
+    'listCleaningHistory', 'listSwaps', 'requestSwap', 'acceptSwap', 'declineSwap', 'cancelSwap', 'adminListAccounts', 'adminAddRoommate', 'adminProvisionAccount', 'adminResetSignIn', 'adminDisableSignIn', 'adminEndSessions', 'adminChangeRole']) {
     run[name] = function (...args) {
       calls.push(name);
       callArguments.push(JSON.parse(JSON.stringify(args))); // plain data, as google.script.run would send it
@@ -167,6 +199,11 @@ function loadFrontend({ storage = new Map(), systemDark = false, storageBlocked 
     'profile-button': profileButton,
     'beta-notice': betaNotice,
     'auth-screen': authScreen,
+    'admin-dialog': adminDialog,
+    'swap-dialog': swapDialog,
+    ...swapInputs,
+    'panel-admin': panels.admin,
+    ...adminInputs,
     'main-content': mainContent,
     ...authInputs,
     tabs,
@@ -189,8 +226,11 @@ function loadFrontend({ storage = new Map(), systemDark = false, storageBlocked 
   const themeAtLoad = root.attributes['data-theme'];
   vm.runInContext(scriptOf('ScheduleView.html'), context);
   vm.runInContext(scriptOf('VacationView.html'), context);
+  vm.runInContext(scriptOf('HistoryView.html'), context);
+  vm.runInContext(scriptOf('SwapView.html'), context);
   vm.runInContext(scriptOf('Session.html'), context);
   vm.runInContext(scriptOf('LoginView.html'), context);
+  vm.runInContext(scriptOf('AdminView.html'), context);
   vm.runInContext(scriptOf('Shell.html'), context);
   vm.runInContext(scriptOf('App.html'), context);
 
@@ -207,6 +247,17 @@ function loadFrontend({ storage = new Map(), systemDark = false, storageBlocked 
     authScreen,
     mainContent,
     authInputs,
+    adminDialog,
+    adminInputs,
+    swapDialog,
+    swapInputs,
+    swapPanelClick: (action, attributes = {}) => panels.swaps.listeners.click({ target: { getAttribute: (name) => (name === 'data-action' ? action : attributes[name] || null) } }),
+    swapDialogClick: (action) => swapDialog.listeners.click({ target: { getAttribute: (name) => (name === 'data-action' ? action : null) } }),
+    swapChange: () => swapDialog.listeners.change({ target: {} }),
+    swapEscape: () => swapDialog.listeners.cancel({ preventDefault() {} }),
+    adminPanelClick: (action, attributes = {}) => panels.admin.listeners.click({ target: { getAttribute: (name) => (name === 'data-action' ? action : attributes[name] || null) } }),
+    adminDialogClick: (action) => adminDialog.listeners.click({ target: { getAttribute: (name) => (name === 'data-action' ? action : null) } }),
+    adminEscape: () => adminDialog.listeners.cancel({ preventDefault() {} }),
     authSubmit: (form) => authScreen.listeners.submit({ target: { getAttribute: (name) => (name === 'data-form' ? form : null) }, preventDefault() {} }),
     authClick: (action, attributes = {}) => authScreen.listeners.click({ target: { getAttribute: (name) => (name === 'data-action' ? action : attributes[name] || null) } }),
     signedIn: () => !mainContent.hidden && !tabs.hidden && authScreen.hidden,
@@ -586,8 +637,11 @@ test('the page includes only frontend files that exist', () => {
     'frontend/Theme',
     'frontend/ScheduleView',
     'frontend/VacationView',
+    'frontend/HistoryView',
+    'frontend/SwapView',
     'frontend/Session',
     'frontend/LoginView',
+    'frontend/AdminView',
     'frontend/Shell',
     'frontend/App',
   ]);
@@ -756,7 +810,7 @@ test('the only buttons are the known ones, and the only navigation is the four-s
     for (const [button] of source.matchAll(/<button\b[^>]*>/g)) {
       assert.match(
         button,
-        /data-choice="|data-tab="(schedule|vacation|swaps|history)"|id="profile-button"|class="button auth-submit" type="submit"|data-action="(dismiss-beta|close-profile|sign-out|toggle-password|retry|mark-cleaned|confirm-clean|cancel-clean|retry-vacations|plan-vacation|save-vacation|close-vacation|cancel-vacation|confirm-cancel-vacation|edit-vacation|end-vacation|save-edit|confirm-end-vacation)"/,
+        /data-choice="|data-tab="(schedule|vacation|swaps|history)"|id="profile-button"|class="button auth-submit" type="submit"|data-action="(dismiss-beta|close-profile|sign-out|toggle-password|open-admin|admin-add|admin-retry|admin-back|admin-provision|admin-reset|admin-end-sessions|admin-disable|admin-role|admin-save-add|admin-save-provision|admin-confirm|admin-copy|admin-done|admin-close|retry|mark-cleaned|confirm-clean|cancel-clean|retry-vacations|plan-vacation|save-vacation|close-vacation|cancel-vacation|confirm-cancel-vacation|edit-vacation|end-vacation|save-edit|confirm-end-vacation|retry-history|swap-request|swap-retry|swap-accept|swap-decline|swap-cancel|swap-send|swap-confirm|swap-close)"/,
         `${file}: ${button}`
       );
     }
@@ -765,9 +819,12 @@ test('the only buttons are the known ones, and the only navigation is the four-s
     assert.equal((source.match(/<nav\b/g) || []).length, file === 'Index.html' ? 1 : 0, file);
     // The only text controls are the vacation dates and the sign-in fields.
     for (const [input] of source.matchAll(/<input\b[^>]*>/g)) {
-      assert.ok((file === 'VacationView.html' && /type="date"/.test(input)) || (file === 'LoginView.html' && /class="text-input"/.test(input)), `${file}: ${input}`);
+      const allowed = (file === 'VacationView.html' && /type="date"/.test(input)) || (file === 'LoginView.html' && /class="text-input"/.test(input)) ||
+        (file === 'AdminView.html' && (/class="text-input"/.test(input) || /type="radio" name="admin-role"/.test(input)));
+      assert.ok(allowed, `${file}: ${input}`);
     }
-    assert.doesNotMatch(source, /<select\b/, file); // there is no picker any more
+    // The only dropdowns are the two turn pickers of the swap form; there is no name picker any more.
+    if (file !== 'SwapView.html') assert.doesNotMatch(source, /<select\b/, file);
   }
 });
 
@@ -1756,17 +1813,17 @@ test('tabs switch sections, mark the current one, and never ask the server for a
     assert.deepEqual(page.shown(), [tab]);
     assert.deepEqual(page.current(), [tab]);
   }
-  assert.deepEqual(page.calls, LOADED, 'moving around reloads nothing');
+  assert.deepEqual(page.calls, [...LOADED, 'listSwaps', 'listCleaningHistory'], 'Swaps and History load once, on their first visit; nothing else reloads');
   page.tabClick('swaps');
   page.tabsClickElsewhere();
   assert.deepEqual(page.shown(), ['swaps'], 'a click that is not on a tab changes nothing');
-  assert.deepEqual(page.calls, LOADED);
+  assert.deepEqual(page.calls, [...LOADED, 'listSwaps', 'listCleaningHistory']);
 });
 
 test('the schedule and Mark as cleaned work exactly as before after visiting other tabs', () => {
   const page = withHari();
   const before = page.app.innerHTML;
-  for (const tab of ['vacation', 'swaps', 'history', 'schedule']) page.tabClick(tab);
+  for (const tab of ['vacation', 'schedule']) page.tabClick(tab);
   assert.equal(page.app.innerHTML, before, 'the schedule was not re-rendered');
   assert.equal(hasMarkButton(page.app.innerHTML), true);
   page.clickMark();
@@ -1778,9 +1835,9 @@ test('the schedule and Mark as cleaned work exactly as before after visiting oth
 
 test('a schedule that arrives while another tab is open is waiting there, and the tab bar survives errors', () => {
   const page = loadFrontend();
-  page.tabClick('history');
+  page.tabClick('vacation');
   page.succeed(schedule());
-  assert.deepEqual(page.shown(), ['history']);
+  assert.deepEqual(page.shown(), ['vacation']);
   page.tabClick('schedule');
   assert.match(textOf(page.app.innerHTML), /Current turn/);
 
@@ -1792,19 +1849,11 @@ test('a schedule that arrives while another tab is open is waiting there, and th
   assert.match(textOf(broken.app.innerHTML), /Couldn’t reach the server/);
 });
 
-test('Vacation is a real section, and Swaps and History are honest "Work in progress" pages', () => {
+test('Vacation is a real section on the tab, not behind a dialog', () => {
   const page = withHari();
   assert.match(textOf(page.panels.vacation.innerHTML), /^Vacations /);
   assert.doesNotMatch(page.panels.vacation.innerHTML, /open-vacations/, 'the overview is on the tab, not behind a dialog');
-
-  for (const [tab, title] of [['swaps', 'Swaps'], ['history', 'History']]) {
-    const html = page.panels[tab].innerHTML;
-    const text = textOf(html);
-    assert.match(text, new RegExp(`^${title} Work in progress `));
-    assert.match(text, /Nothing to do here yet\.$/);
-    assert.doesNotMatch(html, /<(button|input|select|textarea|form|a )|data-action|onclick/, `${tab}: nothing to click or submit`);
-  }
-  assert.deepEqual(page.calls, LOADED, 'unfinished sections never touch the server');
+  assert.deepEqual(page.calls, LOADED);
 });
 
 test('a Beta badge sits next to the name, and the first visit gets a dismissible notice', () => {
@@ -1868,7 +1917,11 @@ test('the profile dialog shows who is signed in and offers Sign out and Close', 
   page.succeed(schedule());
   page.openProfile();
   assert.equal(page.profileDialog.open, true);
-  assert.equal(textOf(page.profileDialog.innerHTML), 'Profile Hari Admin · Signed in Signing out ends your session on all your devices. Sign out Close');
+  assert.equal(textOf(page.profileDialog.innerHTML), 'Profile Hari Admin · Signed in Manage household Signing out ends your session on all your devices. Sign out Close');
+  const roommate = loadFrontend({ as: 'Jijo' });
+  roommate.succeed(schedule());
+  roommate.openProfile();
+  assert.doesNotMatch(roommate.profileDialog.innerHTML, /open-admin|Manage household/, 'only admins see the admin entry');
   assert.match(page.profileDialog.innerHTML, /data-action="close-profile" autofocus/);
   page.profileClick('something-else');
   assert.equal(page.profileDialog.open, true);
@@ -1927,12 +1980,11 @@ test('a tap on the icon or label inside a button counts as a tap on the button',
 test('Schedule and vacations are fetched again only after they have gone stale, and never while saving', () => {
   const page = withHari();
   page.succeedCall(1, vacationList());
-  page.tabClick('history');
+  page.tabClick('vacation');
   page.tabClick('schedule');
   page.tabClick('vacation');
   assert.deepEqual(page.calls, LOADED, 'recent copies are kept');
 
-  page.tabClick('history');
   page.view('Date.now = (real => () => real() + 6 * 60 * 1000)(Date.now)');
   page.tabClick('schedule');
   assert.deepEqual(page.calls, [...LOADED, 'getRotationSchedule'], 'an old schedule is refreshed');
@@ -1940,7 +1992,6 @@ test('Schedule and vacations are fetched again only after they have gone stale, 
   page.tabClick('vacation');
   assert.deepEqual(page.calls, [...LOADED, 'getRotationSchedule', 'listVacations'], 'an old vacation list is refreshed');
   page.succeed(vacationList());
-  page.tabClick('history');
   page.tabClick('schedule');
   page.tabClick('vacation');
   assert.equal(page.calls.length, 4, 'and then both are recent again');
@@ -1948,7 +1999,478 @@ test('Schedule and vacations are fetched again only after they have gone stale, 
   const failed = loadFrontend();
   failed.fail();
   failed.view('Date.now = (real => () => real() + 6 * 60 * 1000)(Date.now)');
-  failed.tabClick('history');
+  failed.tabClick('vacation');
   failed.tabClick('schedule');
   assert.deepEqual(failed.calls, LOADED, 'a failed load keeps its Try again button instead');
+});
+
+// Admin section (opened from Profile; ADMIN only, checked by the server on every call)
+
+const accountOf = (name, extra = {}) => ({ roommate_id: `id-${name}`, name, member_code: `${name.slice(0, 3).toUpperCase()}-00${extra.n || 1}`, username: name.toLowerCase(), role: 'ROOMMATE', status: 'active', position: 1, is_you: false, ...extra });
+const accountList = (...accounts) => ({ ok: true, accounts });
+const HOUSEHOLD = accountList(
+  accountOf('Hari', { role: 'ADMIN', is_you: true }),
+  accountOf('Jijo', { status: 'temporary' }),
+  accountOf('Arun', { username: null, role: null, status: 'none' }),
+  accountOf('Old', { status: 'inactive' }),
+);
+const adminText = (page) => textOf(page.panels.admin.innerHTML);
+const adminDialogText = (page) => textOf(page.adminDialog.innerHTML);
+
+/** Hari (ADMIN), signed in, with the admin section open and the household loaded. */
+function openAdminPage(list = HOUSEHOLD) {
+  const page = loadFrontend({ as: 'Hari' });
+  page.succeed(schedule());
+  page.succeed(vacationList());
+  page.openProfile();
+  page.profileClick('open-admin');
+  page.succeed(list);
+  return page;
+}
+
+test('only an admin can open the household section; it lists everyone with what can be done', () => {
+  const roommate = loadFrontend({ as: 'Jijo' });
+  roommate.succeed(schedule());
+  roommate.openProfile();
+  roommate.profileClick('open-admin');
+  assert.equal(roommate.panels.admin.hidden, true);
+  assert.equal(roommate.calls.includes('adminListAccounts'), false, 'a roommate’s page does not even ask');
+
+  const page = openAdminPage();
+  assert.equal(page.profileDialog.open, false);
+  assert.equal(page.panels.admin.hidden, false);
+  assert.deepEqual(page.shown(), ['admin'], 'only the admin section is shown');
+  assert.deepEqual(page.current(), [], 'no tab is marked current');
+  const listCall = page.calls.indexOf('adminListAccounts');
+  assert.deepEqual(page.callArguments[listCall], [{ token: 'token-Hari' }]);
+  const text = adminText(page);
+  assert.match(text, /^Household Roommates and their sign-in\. Only admins see this page\. Add roommate/);
+  assert.match(text, /Hari \(you\) HAR-001 · @hari Admin Active New temporary password/);
+  assert.match(text, /Jijo JIJ-001 · @jijo Roommate Waiting for first sign-in New temporary password Sign out everywhere Disable sign-in Make admin/);
+  assert.match(text, /Arun ARU-001 · no username No account yet Create account/);
+  assert.match(text, /Old OLD-001 · @old Roommate Moved out Moved out: change this in the Google Sheet\./);
+  const own = page.panels.admin.innerHTML.split('<li').find((card) => card.includes('(you)'));
+  assert.doesNotMatch(own, /admin-disable|admin-role|admin-end-sessions/, 'your own account cannot be disabled, demoted or signed out here');
+  page.adminPanelClick('admin-back');
+  assert.equal(page.panels.admin.hidden, true);
+  assert.deepEqual(page.shown(), ['schedule']);
+});
+
+test('adding a roommate checks the form, sends exactly the details, then shows the temporary password once', () => {
+  const page = openAdminPage();
+  page.adminPanelClick('admin-add');
+  assert.equal(page.adminDialog.open, true);
+  assert.match(adminDialogText(page), /^Add a roommate They join the rotation at the end/);
+  const inputs = page.adminInputs;
+  page.adminDialogClick('admin-save-add');
+  assert.match(adminDialogText(page), /Fill in the name, email and username\./);
+  Object.assign(inputs['admin-name'], { value: 'Kim Lee' });
+  Object.assign(inputs['admin-email'], { value: 'kim@example' });
+  Object.assign(inputs['admin-username'], { value: 'kim' });
+  page.adminDialogClick('admin-save-add');
+  assert.match(adminDialogText(page), /That email doesn’t look right\./);
+  assert.match(page.adminDialog.innerHTML, /id="admin-name" type="text" value="Kim Lee"/, 'what was typed stays');
+  const before = page.calls.length;
+  inputs['admin-email'].value = 'kim@example.com';
+  inputs['admin-role-admin'].checked = true;
+  page.adminDialogClick('admin-save-add');
+  page.adminDialogClick('admin-save-add');
+  assert.deepEqual(page.calls.slice(before), ['adminAddRoommate'], 'one request however often it is clicked');
+  assert.deepEqual(page.callArguments[before], [{ token: 'token-Hari', name: 'Kim Lee', email: 'kim@example.com', telegram: '', username: 'kim', role: 'ADMIN' }]);
+  assert.match(adminDialogText(page), /Adding the roommate and creating the account\. This takes about 10 seconds…/);
+
+  page.succeed({ ok: true, account: accountOf('Kim Lee', { username: 'kim', role: 'ADMIN', status: 'temporary' }), temporary_password: 'Xy7kP3qRt9mWb2Nc', expires_at: '2026-01-16T12:00:00.000Z' });
+  assert.match(adminDialogText(page), /Temporary password for Kim Lee Username kim \. Give them this password in person\. It is shown only now\. Xy7kP3qRt9mWb2Nc It works until Fri 16 Jan, 13:00 \(Berlin\)/);
+  assert.equal(page.storage.has('Xy7kP3qRt9mWb2Nc'), false);
+  assert.ok(![...page.storage.values()].some((value) => value.includes('Xy7kP3qRt9mWb2Nc')), 'never stored on the device');
+  assert.ok(!page.panels.admin.innerHTML.includes('Xy7kP3qRt9mWb2Nc'));
+
+  const reloads = page.calls.length;
+  page.adminDialogClick('admin-done');
+  assert.equal(page.adminDialog.open, false);
+  assert.equal(page.adminDialog.innerHTML, '', 'the password is wiped from the page');
+  assert.deepEqual(page.calls.slice(reloads), ['adminListAccounts', 'getRotationSchedule'], 'the list and the rotation refresh');
+  page.succeedCall(reloads, HOUSEHOLD);
+  assert.match(adminText(page), /Kim Lee was added to the rotation\./);
+});
+
+test('a refusal keeps the form with a plain reason; a network failure says the save is unconfirmed', () => {
+  const page = openAdminPage();
+  page.adminPanelClick('admin-provision', { 'data-roommate-id': 'id-Arun' });
+  assert.match(adminDialogText(page), /^Create an account for Arun Username/);
+  assert.match(page.adminDialog.innerHTML, /id="admin-username" type="text" value="arun"/, 'a username is suggested');
+  page.adminInputs['admin-username'].value = 'Not Valid!';
+  page.adminDialogClick('admin-save-provision');
+  assert.match(adminDialogText(page), /Check the username/);
+  page.adminInputs['admin-username'].value = 'hari';
+  page.adminDialogClick('admin-save-provision');
+  page.succeed(failure('USERNAME_TAKEN'));
+  assert.match(adminDialogText(page), /That username is already taken\. Choose another one\./);
+  assert.doesNotMatch(adminDialogText(page), /Server detail/);
+  assert.equal(page.adminDialog.open, true);
+
+  page.adminInputs['admin-username'].value = 'arun';
+  page.adminDialogClick('admin-save-provision');
+  page.fail();
+  assert.equal(page.adminDialog.open, false);
+  page.succeed(HOUSEHOLD);
+  assert.match(adminText(page), /couldn’t confirm that it saved/);
+});
+
+test('a new temporary password is asked for first, shown once, and Escape wipes it too', () => {
+  const page = openAdminPage();
+  page.adminPanelClick('admin-reset', { 'data-roommate-id': 'id-Jijo' });
+  assert.match(adminDialogText(page), /^New temporary password for Jijo\? Their current password stops working and they are signed out everywhere\./);
+  assert.match(page.adminDialog.innerHTML, /data-action="admin-close" autofocus/, 'Cancel is the safe default');
+  const before = page.calls.length;
+  page.adminDialogClick('admin-confirm');
+  assert.deepEqual(page.callArguments[before], [{ token: 'token-Hari', roommate_id: 'id-Jijo' }]);
+  page.succeed({ ok: true, account: accountOf('Jijo', { status: 'temporary' }), temporary_password: 'AbCdEfGh23456789', expires_at: '2026-01-16T12:00:00.000Z' });
+  assert.match(page.adminDialog.innerHTML, /AbCdEfGh23456789/);
+  page.adminEscape();
+  assert.equal(page.adminDialog.open, false);
+  assert.equal(page.adminDialog.innerHTML, '');
+  assert.equal(page.calls[page.calls.length - 1], 'adminListAccounts');
+});
+
+test('disable, sign out everywhere and role changes send exactly the account and refresh the list', () => {
+  const cases = [
+    ['admin-disable', {}, 'adminDisableSignIn', {}, /Disable sign-in for Jijo\?/, /Sign-in disabled for Jijo\./],
+    ['admin-end-sessions', {}, 'adminEndSessions', {}, /Sign Jijo out everywhere\?/, /Jijo is signed out everywhere\./],
+    ['admin-role', { 'data-role': 'ADMIN' }, 'adminChangeRole', { role: 'ADMIN' }, /Make Jijo an admin\?/, /Jijo is now an admin\./],
+  ];
+  for (const [action, attributes, call, extra, question, notice] of cases) {
+    const page = openAdminPage();
+    page.adminPanelClick(action, { 'data-roommate-id': 'id-Jijo', ...attributes });
+    assert.match(adminDialogText(page), question);
+    const before = page.calls.length;
+    page.adminDialogClick('admin-confirm');
+    assert.deepEqual(page.calls.slice(before), [call]);
+    assert.deepEqual(page.callArguments[before], [{ token: 'token-Hari', roommate_id: 'id-Jijo', ...extra }]);
+    page.succeed({ ok: true, account: accountOf('Jijo') });
+    assert.equal(page.adminDialog.open, false);
+    page.succeed(HOUSEHOLD);
+    assert.match(adminText(page), notice);
+  }
+  const refused = openAdminPage();
+  refused.adminPanelClick('admin-role', { 'data-roommate-id': 'id-Jijo', 'data-role': 'ADMIN' });
+  refused.adminDialogClick('admin-confirm');
+  refused.succeed(failure('LAST_ADMIN'));
+  assert.match(adminDialogText(refused), /always needs at least one admin/);
+});
+
+test('when the server says you are not an admin any more, the section closes and the profile says Roommate', () => {
+  const page = openAdminPage();
+  page.adminPanelClick('admin-disable', { 'data-roommate-id': 'id-Jijo' });
+  page.adminDialogClick('admin-confirm');
+  page.succeed(failure('FORBIDDEN'));
+  assert.equal(page.panels.admin.hidden, true);
+  assert.equal(page.adminDialog.open, false);
+  assert.deepEqual(page.shown(), ['schedule']);
+  assert.match(textOf(page.profileButton.innerHTML), /Hari Roommate$/);
+  assert.equal(page.calls[page.calls.length - 1], 'getRotationSchedule', 'who you are is checked again');
+
+  const listed = loadFrontend({ as: 'Hari' });
+  listed.succeed(schedule());
+  listed.openProfile();
+  listed.profileClick('open-admin');
+  listed.succeed(failure('FORBIDDEN'));
+  assert.equal(listed.panels.admin.hidden, true);
+});
+
+test('names and IDs in the admin section are escaped', () => {
+  const page = openAdminPage(accountList(accountOf('<img src=x onerror=alert(1)>', { roommate_id: 'id-"><b>', member_code: '<i>X</i>', username: '<u>u</u>' })));
+  assert.doesNotMatch(page.panels.admin.innerHTML, /<img|<b>|<i>|<u>/);
+  assert.match(page.panels.admin.innerHTML, /&lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.match(page.panels.admin.innerHTML, /data-roommate-id="id-&quot;&gt;&lt;b&gt;"/);
+});
+
+test('signing out from the admin section clears it for the next person', () => {
+  const page = openAdminPage();
+  page.adminPanelClick('admin-reset', { 'data-roommate-id': 'id-Jijo' });
+  page.openProfile();
+  page.profileClick('sign-out');
+  assert.equal(page.panels.admin.hidden, true);
+  assert.equal(page.panels.admin.innerHTML, '');
+  assert.equal(page.adminDialog.open, false);
+  assert.equal(page.adminDialog.innerHTML, '');
+});
+
+// History: the latest cleanings, read-only, loaded on the first visit to the tab
+
+const historyEntry = (name, n, extra = {}) => ({
+  log_id: `log-${n}`, roommate: person(name), weekend_starts_at: turn(name, -n).weekend_starts_at, due_at: turn(name, -n).due_at,
+  outcome: 'completed', completed_at: '2026-01-11T17:30:00.000Z', resolved_at: '2026-01-11T17:30:00.000Z', swapped: false, ...extra,
+});
+const historyList = (...entries) => ({ ok: true, entries, limit: 10 });
+const historyText = (page) => textOf(page.panels.history.innerHTML);
+
+test('History loads with the session on its first visit and shows each cleaning as a read-only timeline', () => {
+  const page = withHari();
+  page.succeed(vacationList());
+  assert.equal(page.calls.includes('listCleaningHistory'), false, 'not loaded until asked for');
+  page.tabClick('history');
+  assert.equal(page.calls[page.calls.length - 1], 'listCleaningHistory');
+  assert.deepEqual(page.callArguments[page.calls.length - 1], [{ token: 'token-Hari' }]);
+  assert.match(historyText(page), /Loading history…/);
+  page.succeed(historyList(
+    historyEntry('Jijo', 1),
+    historyEntry('Arun', 2, { outcome: 'vacation_skipped', completed_at: null }),
+    historyEntry('Hari', 3, { outcome: 'admin_resolved', completed_at: null, resolved_at: '2026-01-05T09:00:00.000Z', swapped: true }),
+  ));
+  const text = historyText(page);
+  assert.match(text, /^History Who cleaned, and which turns were skipped. Latest cleanings/);
+  assert.match(text, /Jijo Cleaned Sat 10 – Sun 11 Jan Done Sun 11 Jan, 18:30/);
+  assert.match(text, /Arun Skipped: away Sat 3 – Sun 4 Jan Away that weekend, no make-up turn/);
+  assert.match(text, /Hari Closed by the app owner Sat 27 – Sun 28 Dec Closed Mon 5 Jan, 10:00 without a cleaning · swapped turn/);
+  assert.match(text, /The latest 10, newest first · Times in Berlin$/);
+  assert.doesNotMatch(page.panels.history.innerHTML, /<(button|input|form|select)\b/, 'read-only');
+
+  const calls = page.calls.length;
+  page.tabClick('schedule');
+  page.tabClick('history');
+  assert.equal(page.calls.length, calls, 'a recent history is kept');
+});
+
+test('History has clear empty and error states, retries, escapes names, and refreshes after a cleaning', () => {
+  const empty = withHari();
+  empty.tabClick('history');
+  empty.succeed(historyList());
+  assert.match(historyText(empty), /No cleanings yet Once a turn is marked as cleaned, it shows up here./);
+
+  const broken = withHari();
+  broken.tabClick('history');
+  broken.fail();
+  assert.match(historyText(broken), /Couldn’t load the history Check your connection and try again. Try again/);
+  broken.panels.history.listeners.click({ target: { getAttribute: (name) => (name === 'data-action' ? 'retry-history' : null) } });
+  assert.equal(broken.calls[broken.calls.length - 1], 'listCleaningHistory');
+  broken.succeed({ ok: true, entries: [{ nonsense: true }] });
+  assert.match(historyText(broken), /Couldn’t load the history Try again in a moment./);
+
+  const hostile = withHari();
+  hostile.tabClick('history');
+  hostile.succeed(historyList(historyEntry('<img src=x onerror=alert(1)>', 1)));
+  assert.doesNotMatch(hostile.panels.history.innerHTML, /<img/);
+
+  const ended = withHari();
+  ended.tabClick('history');
+  ended.succeed(failure('UNAUTHENTICATED'));
+  assert.equal(ended.signedIn(), false, 'an ended session goes back to sign-in');
+
+  const after = withHari();
+  after.tabClick('history');
+  after.succeed(historyList(historyEntry('Jijo', 1)));
+  after.tabClick('schedule');
+  after.clickMark();
+  after.dialogClick('confirm-clean');
+  after.succeed({ ok: true, completed_at: '2026-01-13T12:00:00.000Z' });
+  const before = after.calls.length;
+  after.tabClick('history');
+  assert.equal(after.calls[before], 'listCleaningHistory', 'the new record is fetched on the next visit');
+});
+
+// Swaps: incoming, outgoing and accepted requests, and the request form
+
+const swapTurn = (name, n) => ({ owner: person(name), weekend_starts_at: turn(name, n).weekend_starts_at, due_at: turn(name, n).due_at });
+const swapItem = (name, direction, extra = {}) => ({
+  swap_id: `swap-${name}-${direction}`, status: 'pending', direction, partner: person(name),
+  your_due_at: turn('Hari', 1).due_at, their_due_at: turn(name, 2).due_at,
+  your_weekend_starts_at: turn('Hari', 1).weekend_starts_at, their_weekend_starts_at: turn(name, 2).weekend_starts_at,
+  not_applied: false, created_at: '2026-01-12T10:00:00.000Z', ...extra,
+});
+const swapList = (swaps = [], turns = [swapTurn('Hari', 1), swapTurn('Jijo', 2), swapTurn('Arun', 3)]) => ({ ok: true, swaps, turns });
+const swapText = (page) => textOf(page.panels.swaps.innerHTML);
+const swapDialogText = (page) => textOf(page.swapDialog.innerHTML);
+function openSwaps(list = swapList(), as = HARI) {
+  const page = withHari(schedule(), as);
+  page.succeed(vacationList());
+  page.tabClick('swaps');
+  page.succeed(list);
+  return page;
+}
+
+test('the Swaps tab loads with the session, explains that pending requests change nothing, and groups requests by status', () => {
+  const page = withHari();
+  page.tabClick('swaps');
+  assert.equal(page.calls[page.calls.length - 1], 'listSwaps');
+  assert.deepEqual(page.callArguments[page.calls.length - 1], [{ token: 'token-Hari' }]);
+  assert.match(swapText(page), /Loading swaps…/);
+  page.succeed(swapList([
+    swapItem('Jijo', 'incoming'),
+    swapItem('Arun', 'outgoing'),
+    swapItem('Jijo', 'incoming', { swap_id: 'swap-accepted', status: 'accepted' }),
+    swapItem('Arun', 'incoming', { swap_id: 'swap-off', status: 'accepted', not_applied: true }),
+  ]));
+  const text = swapText(page);
+  assert.match(text, /^Swaps Pending requests change nothing: cleaning stays with whoever it is scheduled for until the other roommate accepts. A swap trades just those two weekends; the rotation order stays the same. Request a swap/);
+  assert.ok(text.includes('Asked of you Jijo Waiting for an answer You clean Sat 31 Jan – Sun 1 Feb (Jijo’s turn) Jijo cleans Sat 24 – Sun 25 Jan (your turn) Accept Decline'), text);
+  assert.ok(text.includes('You asked Arun Waiting for an answer You clean Sat 31 Jan – Sun 1 Feb (Arun’s turn) Arun cleans Sat 24 – Sun 25 Jan (your turn) Cancel request'), text);
+  assert.ok(text.includes('Accepted Jijo Accepted You clean Sat 31 Jan – Sun 1 Feb (Jijo’s turn) Jijo cleans Sat 24 – Sun 25 Jan (your turn) Arun Not in effect'), text);
+  assert.ok(text.endsWith('Not in effect: someone is away or inactive that weekend, so the usual turns stand. Nothing else changed.'), text);
+  const html = page.panels.swaps.innerHTML;
+  assert.equal((html.match(/data-action="swap-accept"/g) || []).length, 1 + 0, 'accept is only on pending incoming requests');
+  assert.equal((html.match(/data-action="swap-cancel"/g) || []).length, 1, 'cancel is only on pending outgoing requests');
+  assert.equal((html.match(/data-action="swap-decline"/g) || []).length, 1);
+  const calls = page.calls.length;
+  page.tabClick('schedule');
+  page.tabClick('swaps');
+  assert.equal(page.calls.length, calls, 'a recent list is kept');
+});
+
+test('empty, error and nothing-to-swap states are clear, and a failed load can be retried', () => {
+  const none = openSwaps(swapList([], []));
+  assert.match(swapText(none), /No swaps yet There is no turn you could swap right now./);
+  assert.doesNotMatch(none.panels.swaps.innerHTML, /swap-request/, 'no button when nothing can be swapped');
+  const only = openSwaps(swapList([], [swapTurn('Hari', 1)]));
+  assert.doesNotMatch(only.panels.swaps.innerHTML, /swap-request/, 'nobody else has a turn to take');
+  const empty = openSwaps();
+  assert.ok(swapText(empty).endsWith('No swaps yet Ask a roommate to trade a cleaning weekend.'));
+  assert.match(empty.panels.swaps.innerHTML, /data-action="swap-request"/);
+
+  const broken = withHari();
+  broken.tabClick('swaps');
+  broken.fail();
+  assert.match(swapText(broken), /Couldn’t load the swaps Check your connection and try again. Try again/);
+  broken.swapPanelClick('swap-retry');
+  assert.equal(broken.calls[broken.calls.length - 1], 'listSwaps');
+  broken.succeed({ ok: true, swaps: [{ nonsense: true }], turns: [] });
+  assert.match(swapText(broken), /Couldn’t load the swaps Try again in a moment./);
+  const ended = withHari();
+  ended.tabClick('swaps');
+  ended.succeed(failure('UNAUTHENTICATED'));
+  assert.equal(ended.signedIn(), false);
+});
+
+test('the request form offers my turns and the others’ turns, previews the exchanged weekends, and sends exactly the choice', () => {
+  const page = openSwaps(swapList([], [swapTurn('Hari', 1), swapTurn('Jijo', 2), swapTurn('Hari', 5), swapTurn('Arun', 3)]));
+  page.swapPanelClick('swap-request');
+  assert.equal(page.swapDialog.open, true);
+  const html = page.swapDialog.innerHTML;
+  assert.match(html, /id="swap-mine"[^>]*autofocus>/);
+  assert.deepEqual([...html.matchAll(/<option value="([^"]*)"( selected)?>([^<]*)<\/option>/g)].map((m) => [m[3], Boolean(m[2])]), [
+    ['Sat 24 – Sun 25 Jan', true], ['Sat 21 – Sun 22 Feb', false], ['Jijo · Sat 31 Jan – Sun 1 Feb', true], ['Arun · Sat 7 – Sun 8 Feb', false],
+  ]);
+  const text = swapDialogText(page);
+  assert.ok(text.startsWith('Request a swap Your turn to give away'), text);
+  assert.ok(text.endsWith('You clean Sat 31 Jan – Sun 1 Feb instead of Jijo Jijo cleans Sat 24 – Sun 25 Jan instead of Hari Nothing changes until Jijo accepts. Send request Not now'), text);
+  const slot = page.swapInputs['swap-preview-slot'];
+  page.swapInputs['swap-mine'].value = turn('Hari', 5).due_at;
+  page.swapInputs['swap-theirs'].value = turn('Arun', 3).due_at;
+  page.swapChange();
+  assert.equal(textOf(slot.innerHTML), 'You clean Sat 7 – Sun 8 Feb instead of Arun Arun cleans Sat 21 – Sun 22 Feb instead of Hari Nothing changes until Arun accepts.');
+
+  const before = page.calls.length;
+  page.swapDialogClick('swap-send');
+  page.swapDialogClick('swap-send');
+  assert.deepEqual(page.calls.slice(before), ['requestSwap'], 'one request however often it is clicked');
+  assert.deepEqual(page.callArguments[before], [{ token: 'token-Hari', your_due_at: turn('Hari', 5).due_at, partner_id: 'id-Arun', their_due_at: turn('Arun', 3).due_at }]);
+  assert.match(swapDialogText(page), /Saving…/);
+  page.succeed({ ok: true, swap: swapItem('Arun', 'outgoing') });
+  assert.equal(page.swapDialog.open, false);
+  assert.equal(page.calls[page.calls.length - 1], 'listSwaps');
+  page.succeed(swapList([swapItem('Arun', 'outgoing')]));
+  assert.match(swapText(page), /Request sent to Arun. Nothing changes until they accept. /);
+  assert.equal(page.calls.includes('markCleaned'), false);
+});
+
+test('accepting asks first, shows the exchange, then reloads the list and refreshes the schedule without blanking it', () => {
+  const page = openSwaps(swapList([swapItem('Jijo', 'incoming')]));
+  const schedulePage = page.app.innerHTML;
+  page.swapPanelClick('swap-accept', { 'data-swap-id': 'swap-Jijo-incoming' });
+  assert.equal(swapDialogText(page), 'Accept Jijo’s swap? You clean Sat 31 Jan – Sun 1 Feb (Jijo’s turn) Jijo cleans Sat 24 – Sun 25 Jan (your turn) Cleaning changes for just these two weekends. Accept swap Not now');
+  assert.match(page.swapDialog.innerHTML, /data-action="swap-close" autofocus/, 'Not now is the safe default');
+  const before = page.calls.length;
+  page.swapDialogClick('swap-confirm');
+  assert.deepEqual(page.callArguments[before], [{ token: 'token-Hari', swap_id: 'swap-Jijo-incoming' }]);
+  assert.equal(page.calls[before], 'acceptSwap');
+  page.succeed({ ok: true, swap: swapItem('Jijo', 'incoming', { status: 'accepted' }) });
+  assert.deepEqual(page.calls.slice(before + 1), ['listSwaps', 'getRotationSchedule']);
+  assert.equal(page.app.innerHTML, schedulePage, 'the schedule stays on screen while it refreshes');
+  page.succeedCall(before + 2, schedule({ current: { status: 'pending' } }));
+  page.succeedCall(before + 1, swapList([swapItem('Jijo', 'incoming', { status: 'accepted' })]));
+  assert.match(swapText(page), /Swap accepted: you and Jijo trade those two weekends./);
+});
+
+test('decline and cancel ask first, only on the right requests, and change nothing else', () => {
+  const page = openSwaps(swapList([swapItem('Jijo', 'incoming'), swapItem('Arun', 'outgoing')]));
+  page.swapPanelClick('swap-cancel', { 'data-swap-id': 'swap-Jijo-incoming' });
+  page.swapPanelClick('swap-accept', { 'data-swap-id': 'swap-Arun-outgoing' });
+  page.swapPanelClick('swap-decline', { 'data-swap-id': 'swap-Arun-outgoing' });
+  assert.equal(page.swapDialog.open, false, 'someone else’s side of a request opens nothing');
+
+  page.swapPanelClick('swap-decline', { 'data-swap-id': 'swap-Jijo-incoming' });
+  assert.equal(swapDialogText(page), 'Decline Jijo’s swap? Nothing changes. They’ll see it was declined. Decline swap Not now');
+  let before = page.calls.length;
+  page.swapDialogClick('swap-confirm');
+  assert.equal(page.calls[before], 'declineSwap');
+  page.succeed({ ok: true });
+  assert.equal(page.calls.includes('getRotationSchedule', before), false, 'declining does not refresh the schedule');
+  assert.deepEqual(page.calls.slice(before + 1), ['listSwaps']);
+  page.succeed(swapList([swapItem('Arun', 'outgoing')]));
+  assert.match(swapText(page), /Request declined./);
+
+  page.swapPanelClick('swap-cancel', { 'data-swap-id': 'swap-Arun-outgoing' });
+  assert.equal(swapDialogText(page), 'Cancel your request to Arun? Nothing changes. Cancel request Not now');
+  before = page.calls.length;
+  page.swapDialogClick('swap-confirm');
+  assert.deepEqual(page.callArguments[before], [{ token: 'token-Hari', swap_id: 'swap-Arun-outgoing' }]);
+  page.swapEscape(); // busy: Escape cannot close it
+  assert.equal(page.swapDialog.open, true);
+  page.succeed({ ok: true });
+  page.succeed(swapList());
+  assert.match(swapText(page), /Request cancelled./);
+  page.swapPanelClick('swap-request');
+  page.swapEscape();
+  assert.equal(page.swapDialog.open, false);
+  assert.equal(page.swapDialog.innerHTML, '');
+});
+
+test('stale requests, vacation conflicts and other refusals are explained in plain words and reload the list', () => {
+  const cases = [
+    ['SWAP_STALE', /schedule changed \(for example, someone planned a vacation\), so this swap no longer fits/],
+    ['SWAP_PARTNER_UNAVAILABLE', /One of you is away or inactive that weekend/],
+    ['SWAP_NOT_PENDING', /already answered or cancelled/],
+    ['SWAP_NOT_FOUND', /isn’t there any more/],
+    ['SWAP_TURN_TAKEN', /already part of another swap/],
+    ['SWAP_NOT_YOURS', /isn’t yours to change/],
+    ['BUSY', /Someone else is saving/],
+    ['SOMETHING_NEW', /Something went wrong, so nothing was changed/],
+  ];
+  for (const [code, message] of cases) {
+    const page = openSwaps(swapList([swapItem('Jijo', 'incoming')]));
+    page.swapPanelClick('swap-accept', { 'data-swap-id': 'swap-Jijo-incoming' });
+    page.swapDialogClick('swap-confirm');
+    page.succeed(failure(code));
+    assert.equal(page.swapDialog.open, false, code);
+    assert.equal(page.calls[page.calls.length - 1], 'listSwaps', `${code}: the list is reloaded`);
+    assert.equal(page.calls.includes('getRotationSchedule', LOADED.length), false);
+    page.succeed(swapList([swapItem('Jijo', 'incoming')]));
+    assert.match(swapText(page), message, code);
+    assert.doesNotMatch(swapText(page), /Server detail/);
+  }
+  const lost = openSwaps(swapList([swapItem('Jijo', 'incoming')]));
+  lost.swapPanelClick('swap-accept', { 'data-swap-id': 'swap-Jijo-incoming' });
+  lost.swapDialogClick('swap-confirm');
+  lost.fail();
+  lost.succeed(swapList([swapItem('Jijo', 'incoming')]));
+  assert.match(swapText(lost), /couldn’t confirm that it saved/);
+  const ended = openSwaps(swapList([swapItem('Jijo', 'incoming')]));
+  ended.swapPanelClick('swap-accept', { 'data-swap-id': 'swap-Jijo-incoming' });
+  ended.swapDialogClick('swap-confirm');
+  ended.succeed(failure('UNAUTHENTICATED'));
+  assert.equal(ended.signedIn(), false);
+  assert.equal(ended.swapDialog.open, false);
+  assert.equal(ended.panels.swaps.innerHTML, '');
+});
+
+test('names in the Swaps tab are escaped, and the requests never carry a roommate id of the viewer', () => {
+  const hostile = swapItem('<img src=x onerror=alert(1)>', 'incoming');
+  const page = openSwaps(swapList([hostile], [swapTurn('Hari', 1), swapTurn('<b>Eve</b>', 2)]));
+  assert.doesNotMatch(page.panels.swaps.innerHTML, /<img|<b>/);
+  page.swapPanelClick('swap-request');
+  assert.doesNotMatch(page.swapDialog.innerHTML, /<b>/);
+  page.swapInputs['swap-mine'].value = turn('Hari', 1).due_at;
+  page.swapInputs['swap-theirs'].value = turn('<b>Eve</b>', 2).due_at;
+  page.swapDialogClick('swap-send');
+  assert.equal(Object.keys(page.callArguments[page.calls.length - 1][0]).sort().join(), 'partner_id,their_due_at,token,your_due_at');
 });

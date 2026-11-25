@@ -5,6 +5,8 @@ const appElement = document.getElementById('app');
 const dialogElement = document.getElementById('confirm-dialog');
 const vacationDialog = document.getElementById('vacation-dialog');
 const profileDialog = document.getElementById('profile-dialog');
+const adminDialog = document.getElementById('admin-dialog');
+const swapDialog = document.getElementById('swap-dialog');
 const profileButton = document.getElementById('profile-button');
 const betaNotice = document.getElementById('beta-notice');
 const tabsElement = document.getElementById('tabs');
@@ -15,6 +17,7 @@ const panels = {
   vacation: document.getElementById('panel-vacation'),
   swaps: document.getElementById('panel-swaps'),
   history: document.getElementById('panel-history'),
+  admin: document.getElementById('panel-admin'), // not a tab: opened from Profile, for ADMIN only
 };
 let currentSchedule = null;
 let viewer = null; // { roommate_id, name, role, must_change_password } as reported by the server
@@ -37,6 +40,23 @@ let pendingVacationCancel = null;
 let pendingEdit = null; // { vacation, draft } while the edit form is open
 let pendingEnd = null;
 let vacationBusy = false;
+// Swaps: your requests and the turns that could be swapped; loaded when the Swaps tab is opened, then again once stale.
+let swapData = null; // { swaps, turns }
+let swapStatus = 'idle'; // idle | loading | ready | error | network
+let swapsLoadedAt = 0;
+let swapNotice = null;
+let swapBusy = false;
+let pendingSwap = null; // { kind: 'request', draft } or { kind: 'accept' | 'decline' | 'cancel', swap }
+// Cleaning history: loaded when the History tab is first opened, then again once stale or after a cleaning.
+let historyData = null;
+let historyStatus = 'idle'; // idle | loading | ready | error | network
+let historyLoadedAt = 0;
+// Admin section: the account list and the one open action (a form, a confirmation or a one-time password).
+let adminAccounts = null;
+let adminStatus = 'idle'; // idle | loading | ready | error | network
+let adminNotice = null;
+let adminBusy = false;
+let pendingAdmin = null; // { kind, account, draft }
 // Refusals that mean the page's copy is out of date: the form closes and the list is reloaded.
 const STALE_VACATION_CODES = ['VACATION_CHANGED', 'VACATION_NOT_FOUND', 'RECORD_NOT_FOUND', 'VACATION_ENDED', 'NOT_YOUR_VACATION'];
 
@@ -107,9 +127,21 @@ function resetSignedInState() {
   vacationStatus = 'idle';
   vacationNotice = null;
   vacationBusy = false;
+  adminAccounts = null;
+  adminStatus = 'idle';
+  adminNotice = null;
+  historyData = null;
+  historyStatus = 'idle';
+  panels.history.innerHTML = '';
+  swapData = null;
+  swapStatus = 'idle';
+  swapNotice = null;
+  panels.swaps.innerHTML = '';
   closeDialogs();
   appElement.innerHTML = '';
   panels.vacation.innerHTML = '';
+  panels.admin.innerHTML = '';
+  panels.admin.hidden = true;
   refreshProfile();
 }
 
@@ -117,6 +149,8 @@ function closeDialogs() {
   [dialogElement, vacationDialog, profileDialog].forEach(function (dialog) {
     if (dialog.open) dialog.close();
   });
+  closeAdminDialog();
+  closeSwapDialog();
   pendingVacationCancel = null;
   pendingEdit = null;
   pendingEnd = null;
@@ -267,11 +301,14 @@ function selectTab(tab) {
   TABS.forEach(function (name) {
     panels[name].hidden = name !== tab;
   });
+  panels.admin.hidden = true;
   Array.from(tabsElement.querySelectorAll('[data-tab]')).forEach(function (button) {
     button.setAttribute('aria-current', button.getAttribute('data-tab') === tab ? 'page' : 'false');
   });
   if (tab === 'schedule' && currentSchedule && !saving && Date.now() - loadedAt > STALE_AFTER_MS) loadSchedule();
   if (tab === 'vacation' && vacationStatus === 'ready' && !vacationBusy && Date.now() - vacationsLoadedAt > STALE_AFTER_MS) loadVacations();
+  if (tab === 'swaps' && (swapStatus === 'idle' || (swapStatus === 'ready' && !swapBusy && Date.now() - swapsLoadedAt > STALE_AFTER_MS))) loadSwaps();
+  if (tab === 'history' && (historyStatus === 'idle' || (historyStatus === 'ready' && Date.now() - historyLoadedAt > STALE_AFTER_MS))) loadHistory();
 }
 
 function showBetaNoticeOnce() {
@@ -317,6 +354,7 @@ function openConfirm() {
 
 function finishClean(result) {
   saving = false;
+  if (historyStatus !== 'loading') historyStatus = 'idle'; // the next History visit shows the new record
   pendingClean = null;
   notice = result;
   dialogElement.close();
@@ -354,6 +392,185 @@ function carrier(event, selector) {
 function actionOf(event) {
   const source = carrier(event, '[data-action]');
   return source ? source.getAttribute('data-action') : null;
+}
+
+// ---------- swaps (the server checks the session, ownership and status on every call) ----------
+
+function swapView() {
+  return {
+    status: swapStatus === 'idle' ? 'loading' : swapStatus,
+    swaps: (swapData && swapData.swaps) || [],
+    turns: (swapData && swapData.turns) || [],
+    viewerId: viewerId(),
+    notice: swapNotice,
+  };
+}
+
+function renderSwapsView() {
+  panels.swaps.innerHTML = renderSwapsPanel(swapView());
+}
+
+function loadSwaps() {
+  swapStatus = 'loading';
+  renderSwapsView();
+  const epoch = sessionEpoch;
+  google.script.run
+    .withSuccessHandler(function (result) {
+      if (epoch !== sessionEpoch || handleSessionRefusal(result)) return;
+      swapData = isValidSwapList(result) ? result : null;
+      swapStatus = swapData ? 'ready' : 'error';
+      swapsLoadedAt = Date.now();
+      renderSwapsView();
+    })
+    .withFailureHandler(function () {
+      if (epoch !== sessionEpoch) return;
+      swapData = null;
+      swapStatus = 'network';
+      renderSwapsView();
+    })
+    .listSwaps({ token: sessionToken() });
+}
+
+function showSwapDialog(html) {
+  swapDialog.innerHTML = html;
+  if (!swapDialog.open) {
+    swapDialog.showModal();
+    return;
+  }
+  const target = swapDialog.querySelector ? swapDialog.querySelector('[autofocus]') : null;
+  if (target && target.focus) target.focus();
+}
+
+function closeSwapDialog() {
+  pendingSwap = null;
+  swapBusy = false;
+  swapDialog.innerHTML = '';
+  if (swapDialog.open) swapDialog.close();
+}
+
+function findSwap(swapId) {
+  return ((swapData && swapData.swaps) || []).filter(function (swap) {
+    return swap.swap_id === swapId;
+  })[0] || null;
+}
+
+function currentSwapChoices() {
+  return swapChoices((swapData && swapData.turns) || [], viewerId());
+}
+
+function startSwapRequest() {
+  const choices = currentSwapChoices();
+  if (swapBusy || !choices.mine.length || !choices.theirs.length) return;
+  pendingSwap = { kind: 'request', draft: { mine: choices.mine[0].due_at, theirs: choices.theirs[0].due_at } };
+  swapNotice = null;
+  renderSwapsView();
+  showSwapDialog(renderSwapForm(choices, pendingSwap.draft, pickedName()));
+}
+
+/** A change in either choice replaces only the preview, so the select keeps its keyboard focus. */
+function updateSwapPreview() {
+  if (!pendingSwap || pendingSwap.kind !== 'request') return;
+  const choices = currentSwapChoices();
+  pendingSwap.draft = { mine: valueOf('swap-mine'), theirs: valueOf('swap-theirs') };
+  const mine = choices.mine.filter(function (turn) { return turn.due_at === pendingSwap.draft.mine; })[0];
+  const theirs = choices.theirs.filter(function (turn) { return turn.due_at === pendingSwap.draft.theirs; })[0];
+  const slot = document.getElementById('swap-preview-slot');
+  if (slot) slot.innerHTML = renderSwapPreview(mine, theirs, pickedName());
+}
+
+function askSwap(kind, swapId) {
+  const swap = findSwap(swapId);
+  if (!swap || swapBusy || swap.status !== 'pending') return;
+  if (kind === 'accept' && swap.direction !== 'incoming') return;
+  if (kind === 'decline' && swap.direction !== 'incoming') return;
+  if (kind === 'cancel' && swap.direction !== 'outgoing') return;
+  swapNotice = null;
+  renderSwapsView();
+  pendingSwap = { kind: kind, swap: swap };
+  showSwapDialog(renderSwapConfirm(kind, swap));
+}
+
+/** One swap call. Answers for an earlier session are dropped; refusals about stale data reload the list. */
+function runSwapCall(name, request, successText, refreshSchedule) {
+  swapBusy = true;
+  showSwapDialog(renderSwapBusy());
+  const epoch = sessionEpoch;
+  const finish = function (notice) {
+    closeSwapDialog();
+    swapNotice = notice;
+    loadSwaps();
+  };
+  google.script.run
+    .withSuccessHandler(function (result) {
+      if (epoch !== sessionEpoch || handleSessionRefusal(result)) return;
+      const code = errorCodeOf(result);
+      if (code) {
+        finish({ kind: 'error', text: swapMessage(code) });
+        return;
+      }
+      finish({ kind: 'success', text: successText });
+      if (refreshSchedule) loadSchedule(true); // who cleans may have changed: refresh without blanking the page
+    })
+    .withFailureHandler(function () {
+      if (epoch === sessionEpoch) finish({ kind: 'info', text: swapMessage('REQUEST_FAILED') });
+    })[name](Object.assign({ token: sessionToken() }, request));
+}
+
+function sendSwapRequest() {
+  if (!pendingSwap || pendingSwap.kind !== 'request' || swapBusy) return;
+  const choices = currentSwapChoices();
+  const draft = { mine: valueOf('swap-mine'), theirs: valueOf('swap-theirs') };
+  const theirs = choices.theirs.filter(function (turn) { return turn.due_at === draft.theirs; })[0];
+  const mine = choices.mine.filter(function (turn) { return turn.due_at === draft.mine; })[0];
+  if (!mine || !theirs) return;
+  runSwapCall('requestSwap', { your_due_at: mine.due_at, partner_id: theirs.owner.roommate_id, their_due_at: theirs.due_at },
+    'Request sent to ' + (theirs.owner.name || 'your roommate') + '. Nothing changes until they accept.', false);
+}
+
+function confirmSwap() {
+  if (!pendingSwap || !pendingSwap.swap || swapBusy) return;
+  const swap = pendingSwap.swap;
+  const kind = pendingSwap.kind;
+  const partner = swapPartnerName(swap);
+  const id = { swap_id: swap.swap_id };
+  if (kind === 'accept') runSwapCall('acceptSwap', id, 'Swap accepted: you and ' + partner + ' trade those two weekends.', true);
+  if (kind === 'decline') runSwapCall('declineSwap', id, 'Request declined.', false);
+  if (kind === 'cancel') runSwapCall('cancelSwap', id, 'Request cancelled.', false);
+}
+
+function finishSwapDialog() {
+  if (!swapBusy) closeSwapDialog();
+}
+
+// ---------- history (read-only) ----------
+
+function renderHistoryView() {
+  panels.history.innerHTML = renderHistoryPanel({
+    status: historyStatus === 'idle' ? 'loading' : historyStatus,
+    entries: (historyData && historyData.entries) || [],
+    limit: historyData && historyData.limit,
+  });
+}
+
+function loadHistory() {
+  historyStatus = 'loading';
+  renderHistoryView();
+  const epoch = sessionEpoch;
+  google.script.run
+    .withSuccessHandler(function (result) {
+      if (epoch !== sessionEpoch || handleSessionRefusal(result)) return;
+      historyData = isValidHistory(result) ? result : null;
+      historyStatus = historyData ? 'ready' : 'error';
+      historyLoadedAt = Date.now();
+      renderHistoryView();
+    })
+    .withFailureHandler(function () {
+      if (epoch !== sessionEpoch) return;
+      historyData = null;
+      historyStatus = 'network';
+      renderHistoryView();
+    })
+    .listCleaningHistory({ token: sessionToken() });
 }
 
 // ---------- vacations (always the signed-in roommate's own; the server takes who that is from the session) ----------
@@ -597,6 +814,239 @@ function confirmCancelVacation() {
   });
 }
 
+
+// ---------- admin section (the server checks the ADMIN role on every call) ----------
+
+function adminView() {
+  return { status: adminStatus === 'idle' ? 'loading' : adminStatus, accounts: adminAccounts || [], notice: adminNotice };
+}
+
+function renderAdminView() {
+  panels.admin.innerHTML = renderAdminPanel(adminView());
+}
+
+function openAdmin() {
+  if (!viewer || viewer.role !== 'ADMIN') return;
+  if (profileDialog.open) profileDialog.close();
+  if (!panels.schedule.hidden) panels.schedule.setAttribute('data-settled', 'true');
+  TABS.forEach(function (name) {
+    panels[name].hidden = true;
+  });
+  Array.from(tabsElement.querySelectorAll('[data-tab]')).forEach(function (button) {
+    button.setAttribute('aria-current', 'false');
+  });
+  panels.admin.hidden = false;
+  adminNotice = null;
+  loadAccounts();
+}
+
+/** The server says this person is not (or no longer) an admin: leave the section and refresh who they are. */
+function leaveAdminForbidden() {
+  closeAdminDialog();
+  adminAccounts = null;
+  adminStatus = 'idle';
+  panels.admin.innerHTML = '';
+  if (viewer) viewer = Object.assign({}, viewer, { role: 'ROOMMATE' });
+  refreshProfile();
+  selectTab('schedule');
+  loadSchedule(true);
+}
+
+function loadAccounts() {
+  if (adminAccounts === null) adminStatus = 'loading';
+  renderAdminView();
+  const epoch = sessionEpoch;
+  google.script.run
+    .withSuccessHandler(function (result) {
+      if (epoch !== sessionEpoch || handleSessionRefusal(result)) return;
+      if (errorCodeOf(result) === 'FORBIDDEN') {
+        leaveAdminForbidden();
+        return;
+      }
+      adminAccounts = isValidAccountList(result) ? result.accounts : null;
+      adminStatus = adminAccounts ? 'ready' : 'error';
+      renderAdminView();
+    })
+    .withFailureHandler(function () {
+      if (epoch !== sessionEpoch) return;
+      adminAccounts = null;
+      adminStatus = 'network';
+      renderAdminView();
+    })
+    .adminListAccounts({ token: sessionToken() });
+}
+
+function findAccount(roommateId) {
+  return (adminAccounts || []).filter(function (account) {
+    return account.roommate_id === roommateId;
+  })[0] || null;
+}
+
+function showAdminDialog(html) {
+  adminDialog.innerHTML = html;
+  if (!adminDialog.open) {
+    adminDialog.showModal();
+    return;
+  }
+  const target = adminDialog.querySelector ? adminDialog.querySelector('[autofocus]') : null;
+  if (target && target.focus) target.focus();
+}
+
+/** Closing always wipes the dialog, so a temporary password shown in it is gone from the page. */
+function closeAdminDialog() {
+  const wasShowing = pendingAdmin && pendingAdmin.kind === 'shown';
+  pendingAdmin = null;
+  adminBusy = false;
+  adminDialog.innerHTML = '';
+  if (adminDialog.open) adminDialog.close();
+  return wasShowing;
+}
+
+function valueOf(id) {
+  const element = document.getElementById(id);
+  return element && typeof element.value === 'string' ? element.value : '';
+}
+
+function chosenRole() {
+  const admin = document.getElementById('admin-role-admin');
+  return admin && admin.checked ? 'ADMIN' : 'ROOMMATE';
+}
+
+/** A suggestion only: the first name in lower case, letters and digits only. */
+function suggestUsername(name) {
+  const first = String(name || '').split(/\s+/)[0].normalize('NFD').toLowerCase().replace(/[^a-z0-9]/g, '');
+  return /^[a-z]/.test(first) ? first.slice(0, 32) : '';
+}
+
+function askAdmin(kind, roommateId, role) {
+  const account = findAccount(roommateId);
+  if (!account || adminBusy) return;
+  if (kind === 'provision') {
+    pendingAdmin = { kind: 'provision', account: account, draft: { username: suggestUsername(account.name), role: 'ROOMMATE' } };
+    showAdminDialog(renderProvisionForm(account, pendingAdmin.draft, ''));
+    return;
+  }
+  pendingAdmin = { kind: kind === 'role' ? role : kind, account: account };
+  showAdminDialog(renderAdminConfirm(pendingAdmin.kind, account, ''));
+}
+
+function startAddRoommate() {
+  if (adminBusy) return;
+  pendingAdmin = { kind: 'add', draft: { name: '', email: '', telegram: '', username: '', role: 'ROOMMATE' } };
+  showAdminDialog(renderAddRoommateForm(pendingAdmin.draft, ''));
+}
+
+/** Re-shows the open form or confirmation with a problem, keeping what was typed. */
+function showAdminProblem(action, message) {
+  adminBusy = false;
+  pendingAdmin = action;
+  if (action.kind === 'add') showAdminDialog(renderAddRoommateForm(action.draft, message));
+  else if (action.kind === 'provision') showAdminDialog(renderProvisionForm(action.account, action.draft, message));
+  else showAdminDialog(renderAdminConfirm(action.kind, action.account, message));
+}
+
+function runAdminCall(name, request, action, successText, busyText) {
+  adminBusy = true;
+  showAdminDialog(renderAdminBusy(busyText));
+  const epoch = sessionEpoch;
+  google.script.run
+    .withSuccessHandler(function (result) {
+      if (epoch !== sessionEpoch || handleSessionRefusal(result)) return;
+      const code = errorCodeOf(result);
+      if (code === 'FORBIDDEN') {
+        leaveAdminForbidden();
+        return;
+      }
+      if (code) {
+        showAdminProblem(action, adminMessage(code));
+        return;
+      }
+      adminBusy = false;
+      adminNotice = { kind: 'success', text: successText };
+      if (result && result.ok === true && typeof result.temporary_password === 'string' && result.account) {
+        pendingAdmin = { kind: 'shown', added: action.kind === 'add' };
+        showAdminDialog(renderTemporaryPassword(result.account, result.temporary_password, result.expires_at));
+        return;
+      }
+      closeAdminDialog();
+      loadAccounts();
+    })
+    .withFailureHandler(function () {
+      if (epoch !== sessionEpoch) return;
+      closeAdminDialog();
+      adminNotice = { kind: 'info', text: adminMessage('REQUEST_FAILED') };
+      loadAccounts();
+    })[name](Object.assign({ token: sessionToken() }, request));
+}
+
+function saveAddRoommate() {
+  if (!pendingAdmin || pendingAdmin.kind !== 'add' || adminBusy) return;
+  const action = pendingAdmin;
+  action.draft = { name: valueOf('admin-name'), email: valueOf('admin-email'), telegram: valueOf('admin-telegram'), username: valueOf('admin-username'), role: chosenRole() };
+  const problem = addRoommateProblem(action.draft);
+  if (problem) {
+    showAdminProblem(action, problem);
+    return;
+  }
+  runAdminCall('adminAddRoommate', {
+    name: action.draft.name, email: action.draft.email, telegram: action.draft.telegram, username: action.draft.username, role: action.draft.role,
+  }, action, action.draft.name.trim() + ' was added to the rotation.', 'Adding the roommate and creating the account. This takes about 10 seconds…');
+}
+
+function saveProvision() {
+  if (!pendingAdmin || pendingAdmin.kind !== 'provision' || adminBusy) return;
+  const action = pendingAdmin;
+  action.draft = { username: valueOf('admin-username'), role: chosenRole() };
+  const problem = usernameProblem(action.draft.username);
+  if (problem) {
+    showAdminProblem(action, problem);
+    return;
+  }
+  runAdminCall('adminProvisionAccount', { roommate_id: action.account.roommate_id, username: action.draft.username, role: action.draft.role },
+    action, 'Account created for ' + action.account.name + '.', 'Creating the account. This takes a few seconds…');
+}
+
+function confirmAdmin() {
+  if (!pendingAdmin || adminBusy) return;
+  const action = pendingAdmin;
+  const id = { roommate_id: action.account.roommate_id };
+  const name = action.account.name;
+  if (action.kind === 'reset') runAdminCall('adminResetSignIn', id, action, 'New temporary password for ' + name + '.', 'Creating a temporary password. This takes a few seconds…');
+  if (action.kind === 'disable') runAdminCall('adminDisableSignIn', id, action, 'Sign-in disabled for ' + name + '.', 'Saving…');
+  if (action.kind === 'end') runAdminCall('adminEndSessions', id, action, name + ' is signed out everywhere.', 'Saving…');
+  if (action.kind === 'ADMIN' || action.kind === 'ROOMMATE') {
+    runAdminCall('adminChangeRole', Object.assign({ role: action.kind }, id), action, name + ' is now ' + (action.kind === 'ADMIN' ? 'an admin.' : 'a roommate.'), 'Saving…');
+  }
+}
+
+function copyTemporaryPassword() {
+  const element = document.getElementById('temp-password');
+  const status = document.getElementById('copy-status');
+  const say = function (text) {
+    if (status) status.textContent = text;
+  };
+  const text = element ? element.textContent : '';
+  try {
+    navigator.clipboard.writeText(text).then(function () {
+      say('Copied.');
+    }, function () {
+      say('Copying isn’t allowed here: select the password and copy it.');
+    });
+  } catch (error) {
+    say('Copying isn’t allowed here: select the password and copy it.');
+  }
+}
+
+/** Done, Cancel or Escape: the dialog is wiped; after a one-time password the list (and schedule) refresh. */
+function finishAdminDialog() {
+  if (adminBusy) return;
+  const added = pendingAdmin && pendingAdmin.added;
+  if (closeAdminDialog()) {
+    loadAccounts();
+    if (added) loadSchedule(true);
+  }
+}
+
 // ---------- events ----------
 
 authScreen.addEventListener('submit', function (event) {
@@ -628,6 +1078,38 @@ panels.vacation.addEventListener('click', function (event) {
   if (action === 'end-vacation') askEndVacation(carrier(event, '[data-action]').getAttribute('data-vacation-id'));
 });
 
+panels.swaps.addEventListener('click', function (event) {
+  const action = actionOf(event);
+  const source = carrier(event, '[data-action]');
+  const swapId = source ? source.getAttribute('data-swap-id') : null;
+  if (action === 'swap-request') startSwapRequest();
+  if (action === 'swap-retry') loadSwaps();
+  if (action === 'swap-accept') askSwap('accept', swapId);
+  if (action === 'swap-decline') askSwap('decline', swapId);
+  if (action === 'swap-cancel') askSwap('cancel', swapId);
+});
+
+swapDialog.addEventListener('click', function (event) {
+  const action = actionOf(event);
+  if (action === 'swap-send') sendSwapRequest();
+  if (action === 'swap-confirm') confirmSwap();
+  if (action === 'swap-close') finishSwapDialog();
+});
+
+swapDialog.addEventListener('change', function () {
+  updateSwapPreview();
+});
+
+// Escape closes the dialog without a click (while saving it stays open).
+swapDialog.addEventListener('cancel', function (event) {
+  if (event.preventDefault) event.preventDefault();
+  finishSwapDialog();
+});
+
+panels.history.addEventListener('click', function (event) {
+  if (actionOf(event) === 'retry-history') loadHistory();
+});
+
 tabsElement.addEventListener('click', function (event) {
   const button = carrier(event, '[data-tab]');
   selectTab(button ? button.getAttribute('data-tab') : null);
@@ -644,7 +1126,41 @@ profileButton.addEventListener('click', function () {
 profileDialog.addEventListener('click', function (event) {
   const action = actionOf(event);
   if (action === 'close-profile') profileDialog.close();
+  if (action === 'open-admin') openAdmin();
   if (action === 'sign-out') signOut();
+});
+
+panels.admin.addEventListener('click', function (event) {
+  const action = actionOf(event);
+  const source = carrier(event, '[data-action]');
+  const roommateId = source ? source.getAttribute('data-roommate-id') : null;
+  if (action === 'admin-add') startAddRoommate();
+  if (action === 'admin-retry') loadAccounts();
+  if (action === 'admin-back') selectTab('schedule');
+  if (action === 'admin-provision') askAdmin('provision', roommateId);
+  if (action === 'admin-reset') askAdmin('reset', roommateId);
+  if (action === 'admin-disable') askAdmin('disable', roommateId);
+  if (action === 'admin-end-sessions') askAdmin('end', roommateId);
+  if (action === 'admin-role') askAdmin('role', roommateId, source.getAttribute('data-role'));
+});
+
+adminDialog.addEventListener('click', function (event) {
+  const action = actionOf(event);
+  if (action === 'admin-save-add') saveAddRoommate();
+  if (action === 'admin-save-provision') saveProvision();
+  if (action === 'admin-confirm') confirmAdmin();
+  if (action === 'admin-copy') copyTemporaryPassword();
+  if (action === 'admin-done' || action === 'admin-close') finishAdminDialog();
+});
+
+// Escape closes the dialog without a click: wipe it the same way (busy work keeps it open).
+adminDialog.addEventListener('cancel', function (event) {
+  if (adminBusy) {
+    if (event.preventDefault) event.preventDefault();
+    return;
+  }
+  if (event.preventDefault) event.preventDefault();
+  finishAdminDialog();
 });
 
 vacationDialog.addEventListener('click', function (event) {
@@ -665,8 +1181,6 @@ dialogElement.addEventListener('click', function (event) {
 // ---------- start ----------
 
 writeStored(LEGACY_PICK_KEY, null); // the old unverified name pick is no longer used
-panels.swaps.innerHTML = renderWorkInProgress('swaps');
-panels.history.innerHTML = renderWorkInProgress('history');
 showBetaNoticeOnce();
 bindThemeToggle(document.getElementById('theme-toggle'));
 // A stored session is tried straight away: the schedule answer says who is signed in, or sends the page to sign-in.

@@ -275,3 +275,11 @@ test('list skips blank rows and rejects sheets with schema problems', () => {
   spreadsheet.getSheetByName('SWAPS').values[0].push('notes');
   assert.throws(() => SheetDb.list('SWAPS'), /unknown column: notes/);
 });
+
+test('update rejects a value that starts like a formula, before touching the spreadsheet', () => {
+  const project = devProject([]);
+  for (const lead of ['=', '+', '-', '@', '\t']) {
+    assert.throws(() => project.get('SheetDb').update('VACATIONS', 'v1', { cancelled_at: lead + '1' }), /must not start with/, JSON.stringify(lead));
+  }
+  assert.deepEqual(project.opened, []);
+});

@@ -1,0 +1,194 @@
+<script>
+// The admin section (opened from Profile, shown only to ADMIN): the household's accounts and what can be done with
+// them. Data in, HTML strings out; no DOM access and no server calls. The server checks the ADMIN role on every call.
+const ACCOUNT_STATUS = {
+  active: { label: 'Active', tone: 'ok' },
+  temporary: { label: 'Waiting for first sign-in', tone: 'wait' },
+  temporary_expired: { label: 'Temporary password expired', tone: 'warn' },
+  locked: { label: 'Locked for a few minutes', tone: 'warn' },
+  disabled: { label: 'Sign-in disabled', tone: 'off' },
+  none: { label: 'No account yet', tone: 'off' },
+  inactive: { label: 'Moved out', tone: 'off' },
+};
+const ADMIN_MESSAGES = {
+  FORBIDDEN: 'Only admins can manage the household.',
+  USERNAME_TAKEN: 'That username is already taken. Choose another one.',
+  ACCOUNT_INVALID: 'Check the username: 3–32 lower-case letters, digits, dots, dashes or underscores, starting with a letter.',
+  ACCOUNT_EXISTS: 'This roommate already has an account. Issue a new temporary password instead.',
+  ACCOUNT_MISSING: 'This roommate has no account yet. Create one first.',
+  ROOMMATE_INVALID: 'Check the name, email and Telegram name: one of them isn’t valid.',
+  ONBOARDING_INVALID: 'Check the details: a name and an email are needed.',
+  ONBOARDING_DUPLICATE: 'That email already belongs to a roommate in the rotation.',
+  ONBOARDING_INCOMPLETE: 'The roommate was added, but without a rotation position. Ask the app owner to check the Sheet.',
+  SELF_CHANGE: 'You can’t do that to your own account here.',
+  LAST_ADMIN: 'ChoreNest always needs at least one admin who can sign in.',
+  BUSY: 'Someone else is saving right now. Try again in a moment.',
+  INVALID_REQUEST: 'That didn’t look right, so nothing was saved.',
+  REQUEST_FAILED: 'We couldn’t confirm that it saved. Check the list before trying again.',
+};
+const ADMIN_FALLBACK = 'Something went wrong, so nothing was changed. Try again in a moment.';
+
+function adminMessage(code) {
+  return Object.prototype.hasOwnProperty.call(ADMIN_MESSAGES, code) ? ADMIN_MESSAGES[code] : ADMIN_FALLBACK;
+}
+
+function accountPerson(account) {
+  return { roommate_id: account.roommate_id, name: account.name };
+}
+
+function renderStatusBadge(status) {
+  const known = ACCOUNT_STATUS[status] || ACCOUNT_STATUS.none;
+  return '<span class="badge badge-account tone-' + known.tone + '">' + escapeHtml(known.label) + '</span>';
+}
+
+// Written out in full, so every action the page can send is visible here (and checked by the tests).
+const ACCOUNT_BUTTONS = {
+  provision: '<button class="button button-small" type="button" data-action="admin-provision" data-roommate-id="{id}">Create account</button>',
+  reset: '<button class="button button-small" type="button" data-action="admin-reset" data-roommate-id="{id}">New temporary password</button>',
+  enable: '<button class="button button-small" type="button" data-action="admin-reset" data-roommate-id="{id}">Enable with a temporary password</button>',
+  end: '<button class="button button-small button-quiet" type="button" data-action="admin-end-sessions" data-roommate-id="{id}">Sign out everywhere</button>',
+  disable: '<button class="button button-small button-quiet" type="button" data-action="admin-disable" data-roommate-id="{id}">Disable sign-in</button>',
+  makeAdmin: '<button class="button button-small button-quiet" type="button" data-action="admin-role" data-role="ADMIN" data-roommate-id="{id}">Make admin</button>',
+  makeRoommate: '<button class="button button-small button-quiet" type="button" data-action="admin-role" data-role="ROOMMATE" data-roommate-id="{id}">Make roommate</button>',
+};
+
+function actionButton(kind, account) {
+  return ACCOUNT_BUTTONS[kind].replace('{id}', escapeHtml(account.roommate_id));
+}
+
+/** Only what makes sense for this account; your own account cannot be disabled, demoted or signed out here. */
+function renderAccountActions(account) {
+  if (account.status === 'inactive') return '<p class="account-hint">Moved out: change this in the Google Sheet.</p>';
+  if (account.status === 'none') return '<div class="account-actions">' + actionButton('provision', account) + '</div>';
+  const actions = [actionButton(account.status === 'disabled' ? 'enable' : 'reset', account)];
+  if (!account.is_you) {
+    if (account.status !== 'disabled') {
+      actions.push(actionButton('end', account));
+      actions.push(actionButton('disable', account));
+    }
+    actions.push(actionButton(account.role === 'ADMIN' ? 'makeRoommate' : 'makeAdmin', account));
+  }
+  return '<div class="account-actions">' + actions.join('') + '</div>';
+}
+
+function renderAccountCard(account) {
+  const role = account.role ? '<span class="badge badge-role">' + escapeHtml(ROLE_LABELS[account.role] || account.role) + '</span>' : '';
+  return '<li class="card account-card"><div class="account-head">' + avatar(accountPerson(account), 'md') +
+    '<div class="account-text"><p class="name">' + escapeHtml(account.name || 'Unnamed') + (account.is_you ? ' <span class="you">(you)</span>' : '') + '</p>' +
+    '<p class="account-meta">' + escapeHtml(account.member_code || '—') + ' · ' +
+    (account.username ? '@' + escapeHtml(account.username) : 'no username') + '</p>' +
+    '<p class="account-badges">' + role + renderStatusBadge(account.status) + '</p></div></div>' +
+    renderAccountActions(account) + '</li>';
+}
+
+/** view: { status: 'loading' | 'ready' | 'error' | 'network', accounts, notice } */
+function renderAdminPanel(view) {
+  let body;
+  if (view.status === 'ready') {
+    body = '<ul class="account-list">' + view.accounts.map(renderAccountCard).join('') + '</ul>';
+  } else if (view.status === 'error' || view.status === 'network') {
+    body = '<section class="card state state-compact"><span class="state-icon" aria-hidden="true">🗂️</span><h3>Couldn’t load the household</h3>' +
+      '<p>' + (view.status === 'network' ? 'Check your connection and try again.' : 'Try again in a moment.') + '</p>' +
+      '<button class="button" type="button" data-action="admin-retry">Try again</button></section>';
+  } else {
+    body = '<div role="status"><p class="eyebrow">Loading the household…</p><div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div></div>';
+  }
+  return '<div class="layout"><div class="vacation-top"><div><h2 class="panel-title">Household</h2>' +
+    '<p class="vacation-intro">Roommates and their sign-in. Only admins see this page.</p></div>' +
+    '<button class="button" type="button" data-action="admin-add">Add roommate</button></div>' +
+    (view.notice ? renderNotice(view.notice) : '') + body +
+    '<p class="footnote"><button class="link-button" type="button" data-action="admin-back">Back to the schedule</button></p></div>';
+}
+
+function textField(id, label, value, attributes, type) {
+  return '<div class="field"><label for="' + id + '">' + label + '</label>' +
+    '<input class="text-input" id="' + id + '" type="' + (type || 'text') + '" value="' + escapeHtml(value || '') + '"' + (attributes || '') + '></div>';
+}
+
+function roleChoice(role) {
+  const option = function (value, label, hint) {
+    return '<label class="role-option"><input type="radio" name="admin-role" id="admin-role-' + value.toLowerCase() + '" value="' + value + '"' +
+      (role === value ? ' checked' : '') + '> <span><strong>' + label + '</strong> ' + hint + '</span></label>';
+  };
+  return '<fieldset class="field role-choice"><legend>Role</legend>' +
+    option('ROOMMATE', 'Roommate', 'cleans, plans vacations') + option('ADMIN', 'Admin', 'also manages accounts') + '</fieldset>';
+}
+
+function formError(error) {
+  return error ? '<p class="form-error" role="alert">' + escapeHtml(error) + '</p>' : '';
+}
+
+/** draft: { name, email, telegram, username, role } */
+function renderAddRoommateForm(draft, error) {
+  return '<div class="dialog-body dialog-scroll"><h2 id="admin-title">Add a roommate</h2>' +
+    '<p class="who-note">They join the rotation at the end and get an account with a temporary password.</p>' +
+    textField('admin-name', 'Name', draft.name, ' autocomplete="off" maxlength="40" autofocus') +
+    textField('admin-email', 'Email', draft.email, ' autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="254"', 'email') +
+    textField('admin-telegram', 'Telegram name (optional)', draft.telegram, ' autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="33"') +
+    textField('admin-username', 'Username', draft.username, ' autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="32"') +
+    roleChoice(draft.role || 'ROOMMATE') + formError(error) +
+    '<div class="dialog-actions"><button class="button" type="button" data-action="admin-save-add">Add and create account</button>' +
+    '<button class="button button-quiet" type="button" data-action="admin-close">Cancel</button></div></div>';
+}
+
+function renderProvisionForm(account, draft, error) {
+  return '<div class="dialog-body dialog-scroll"><h2 id="admin-title">Create an account for ' + escapeHtml(account.name) + '</h2>' +
+    textField('admin-username', 'Username', draft.username, ' autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="32" autofocus') +
+    roleChoice(draft.role || 'ROOMMATE') + formError(error) +
+    '<div class="dialog-actions"><button class="button" type="button" data-action="admin-save-provision">Create account</button>' +
+    '<button class="button button-quiet" type="button" data-action="admin-close">Cancel</button></div></div>';
+}
+
+const ADMIN_CONFIRM = {
+  reset: { title: 'New temporary password for NAME?', text: 'Their current password stops working and they are signed out everywhere. You’ll see the new temporary password once.', button: 'Create temporary password' },
+  disable: { title: 'Disable sign-in for NAME?', text: 'They are signed out everywhere and can’t sign in until you issue a new temporary password. They stay in the rotation.', button: 'Disable sign-in' },
+  end: { title: 'Sign NAME out everywhere?', text: 'Their password stays the same; they just need to sign in again on each device.', button: 'Sign out everywhere' },
+  ADMIN: { title: 'Make NAME an admin?', text: 'Admins can add roommates, reset passwords and disable accounts.', button: 'Make admin' },
+  ROOMMATE: { title: 'Make NAME a roommate?', text: 'They keep their account but can no longer manage the household.', button: 'Make roommate' },
+};
+
+function renderAdminConfirm(kind, account, error) {
+  const copy = ADMIN_CONFIRM[kind];
+  return '<div class="dialog-body"><h2 id="admin-title">' + escapeHtml(copy.title.replace('NAME', account.name)) + '</h2>' +
+    '<p>' + escapeHtml(copy.text) + '</p>' + formError(error) +
+    '<div class="dialog-actions"><button class="button" type="button" data-action="admin-confirm">' + escapeHtml(copy.button) + '</button>' +
+    '<button class="button button-quiet" type="button" data-action="admin-close" autofocus>Cancel</button></div></div>';
+}
+
+function renderAdminBusy(text) {
+  return '<div class="dialog-body" role="status" aria-busy="true"><p class="auth-status"><span class="spinner" aria-hidden="true"></span>' +
+    escapeHtml(text) + '</p></div>';
+}
+
+/**
+ * The one moment a temporary password is shown. It is not kept anywhere by the page: Done (or closing the dialog)
+ * removes it, and it never appears again.
+ */
+function renderTemporaryPassword(account, password, expiresAt) {
+  return '<div class="dialog-body"><p class="dialog-emoji" aria-hidden="true">🔑</p>' +
+    '<h2 id="admin-title">Temporary password for ' + escapeHtml(account.name) + '</h2>' +
+    '<p>Username <strong>' + escapeHtml(account.username || '') + '</strong>. Give them this password in person. It is shown only now.</p>' +
+    '<p class="temp-password" id="temp-password" translate="no">' + escapeHtml(password) + '</p>' +
+    '<p class="who-note">It works until ' + escapeHtml(formatTimestamp(expiresAt)) + ' (Berlin), only to choose their own password.</p>' +
+    '<p class="copy-status" id="copy-status" role="status"></p>' +
+    '<div class="dialog-actions"><button class="button button-quiet" type="button" data-action="admin-copy">Copy</button>' +
+    '<button class="button" type="button" data-action="admin-done" autofocus>Done</button></div></div>';
+}
+
+/** The first problem the page can see before asking the server, or ''. The server checks everything again. */
+function addRoommateProblem(draft) {
+  if (!draft.name.trim() || !draft.email.trim() || !draft.username.trim()) return 'Fill in the name, email and username.';
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft.email.trim())) return 'That email doesn’t look right.';
+  return usernameProblem(draft.username);
+}
+
+function usernameProblem(username) {
+  return /^[a-z][a-z0-9._-]{2,31}$/.test(username.trim().toLowerCase()) ? '' : ADMIN_MESSAGES.ACCOUNT_INVALID;
+}
+
+function isValidAccountList(result) {
+  return Boolean(result) && result.ok === true && Array.isArray(result.accounts) && result.accounts.every(function (account) {
+    return Boolean(account) && typeof account.roommate_id === 'string' && typeof account.status === 'string';
+  });
+}
+</script>
