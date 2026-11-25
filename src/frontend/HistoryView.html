@@ -1,0 +1,54 @@
+<script>
+// The History tab: the latest cleaning records as a read-only timeline. Data in, HTML strings out; no DOM access.
+const HISTORY_OUTCOMES = {
+  completed: { label: 'Cleaned', tone: 'ok' },
+  vacation_skipped: { label: 'Skipped: away', tone: 'wait' },
+  admin_resolved: { label: 'Closed by the app owner', tone: 'off' },
+};
+
+function historyDetail(entry) {
+  const detail = entry.outcome === 'completed' && entry.completed_at
+    ? 'Done ' + formatTimestamp(entry.completed_at)
+    : entry.outcome === 'vacation_skipped'
+      ? 'Away that weekend, no make-up turn'
+      : 'Closed ' + formatTimestamp(entry.resolved_at) + ' without a cleaning';
+  return detail + (entry.swapped ? ' · swapped turn' : '');
+}
+
+function renderHistoryEntry(entry) {
+  const outcome = HISTORY_OUTCOMES[entry.outcome] || HISTORY_OUTCOMES.admin_resolved;
+  return '<li class="timeline-item">' + avatar(entry.roommate, 'md') +
+    '<div class="timeline-body"><div class="timeline-head"><p class="name">' + escapeHtml(displayName(entry.roommate)) + '</p>' +
+    '<span class="badge badge-account tone-' + outcome.tone + '">' + escapeHtml(outcome.label) + '</span></div>' +
+    '<p class="when">' + escapeHtml(formatWeekend(entry)) + '</p>' +
+    '<p class="history-detail">' + escapeHtml(historyDetail(entry)) + '</p></div></li>';
+}
+
+/** view: { status: 'loading' | 'ready' | 'error' | 'network', entries, limit } */
+function renderHistoryPanel(view) {
+  let body;
+  if (view.status === 'ready' && view.entries.length) {
+    body = '<section class="card upcoming" aria-labelledby="history-title"><h3 class="eyebrow section-title" id="history-title">Latest cleanings</h3>' +
+      '<ol class="timeline">' + view.entries.map(renderHistoryEntry).join('') + '</ol></section>' +
+      '<p class="footnote">The latest ' + escapeHtml(String(view.limit || view.entries.length)) + ', newest first · Times in Berlin</p>';
+  } else if (view.status === 'ready') {
+    body = '<section class="card state state-compact"><span class="state-icon" aria-hidden="true">🕘</span><h3>No cleanings yet</h3>' +
+      '<p>Once a turn is marked as cleaned, it shows up here.</p></section>';
+  } else if (view.status === 'error' || view.status === 'network') {
+    body = '<section class="card state state-compact"><span class="state-icon" aria-hidden="true">🕘</span><h3>Couldn’t load the history</h3><p>' +
+      (view.status === 'network' ? 'Check your connection and try again.' : 'Try again in a moment.') + '</p>' +
+      '<button class="button" type="button" data-action="retry-history">Try again</button></section>';
+  } else {
+    body = '<div role="status"><p class="eyebrow">Loading history…</p><div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div></div>';
+  }
+  return '<div class="layout"><div class="vacation-top"><div><h2 class="panel-title">History</h2>' +
+    '<p class="vacation-intro">Who cleaned, and which turns were skipped.</p></div></div>' + body + '</div>';
+}
+
+function isValidHistory(result) {
+  return Boolean(result) && result.ok === true && Array.isArray(result.entries) && result.entries.every(function (entry) {
+    return Boolean(entry) && Boolean(entry.roommate) && typeof entry.roommate.roommate_id === 'string' &&
+      typeof entry.outcome === 'string' && !isNaN(Date.parse(entry.weekend_starts_at)) && !isNaN(Date.parse(entry.due_at));
+  });
+}
+</script>

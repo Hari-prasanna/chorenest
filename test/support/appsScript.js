@@ -125,8 +125,36 @@ const listJs = (dir) => fs.readdirSync(dir).filter((f) => f.endsWith('.js')).sor
  * The maintenance window is open unless `maintenance: false` or the properties set MAINTENANCE_UNTIL themselves.
  * `lock` records and controls LockService: { events, held, deny }.
  */
-function loadProject({ properties = {}, spreadsheets = [], activeUser = OWNER, now, maintenance = true, lock = { events: [], held: false, deny: false } } = {}) {
+function loadProject({ properties = {}, spreadsheets = [], activeUser = OWNER, now, maintenance = true, lock = { events: [], held: false, deny: false }, urlFetch } = {}) {
   const opened = [];
+  const fetches = []; // every UrlFetchApp.fetch(url, options) the project makes
+  const logs = []; // everything the project writes to the execution log
+  // Installed triggers, as ScriptApp would hold them: { uid, handler, spec }.
+  const triggers = [];
+  const triggerObject = (trigger) => ({ getUniqueId: () => trigger.uid, getHandlerFunction: () => trigger.handler });
+  const scriptApp = {
+    WeekDay: { MONDAY: 'MONDAY', FRIDAY: 'FRIDAY', SATURDAY: 'SATURDAY', SUNDAY: 'SUNDAY' },
+    getProjectTriggers: () => triggers.map(triggerObject),
+    deleteTrigger: (object) => {
+      const index = triggers.findIndex((trigger) => trigger.uid === object.getUniqueId());
+      if (index !== -1) triggers.splice(index, 1);
+    },
+    newTrigger: (handler) => {
+      const spec = {};
+      const builder = {
+        timeBased: () => builder,
+        onWeekDay: (day) => ((spec.weekDay = day), builder),
+        atHour: (hour) => ((spec.hour = hour), builder),
+        inTimezone: (zone) => ((spec.timeZone = zone), builder),
+        create: () => {
+          const trigger = { uid: String(1000 + triggers.length + Math.floor(Math.random() * 1e9)), handler, spec };
+          triggers.push(trigger);
+          return triggerObject(trigger);
+        },
+      };
+      return builder;
+    },
+  };
   const utilities = fakeUtilities();
   for (const [key, value] of Object.entries(TEST_SECRETS)) {
     if (!(key in properties)) properties = { ...properties, [key]: value };
@@ -135,10 +163,21 @@ function loadProject({ properties = {}, spreadsheets = [], activeUser = OWNER, n
     properties = { ...properties, MAINTENANCE_UNTIL: new Date((now ? now.getTime() : Date.now()) + 30 * 60 * 1000).toISOString() };
   }
   const context = vm.createContext({
-    console: { log() {}, error() {} },
+    console: { log: (...args) => logs.push(args.join(' ')), error: (...args) => logs.push(args.join(' ')) },
+    ScriptApp: scriptApp,
+    UrlFetchApp: {
+      fetch: (url, options) => {
+        fetches.push({ url, options });
+        if (!urlFetch) throw new Error('Unexpected network call');
+        return urlFetch(url, options);
+      },
+    },
     PropertiesService: {
       getScriptProperties: () => ({
         getProperty: (key) => (Object.prototype.hasOwnProperty.call(properties, key) ? properties[key] : null),
+        setProperty: (key, value) => {
+          properties[key] = String(value);
+        },
         deleteProperty: (key) => {
           delete properties[key];
         },
@@ -196,6 +235,9 @@ function loadProject({ properties = {}, spreadsheets = [], activeUser = OWNER, n
 
   return {
     opened,
+    fetches,
+    logs,
+    triggers,
     lock,
     utilities,
     get properties() {

@@ -33,6 +33,9 @@ const CREATED_AT_COLUMN = 'created_at';
 const CLEANING_OUTCOMES = ['completed', 'admin_resolved', 'vacation_skipped'];
 const MEMBER_CODE_PATTERN = /^[A-Z]{3}-\d{3,}$/;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Sheets reads a text cell that starts with one of these as a formula (or a number or command). Dates, IDs, counts and
+// password hashes never start with them, so every stored text is checked.
+const FORMULA_START_PATTERN = /^[=+\-@\t\r]/;
 const TELEGRAM_PATTERN = /^[A-Za-z][A-Za-z0-9_]{4,31}$/;
 
 function getSchema_(sheetName) {
@@ -77,9 +80,9 @@ function validateRecord_(sheetName, record) {
     if (!isBlank_(value) && !isCellValue_(value)) {
       throw new Error(sheetName + ': ' + field + ' must be a string, number, boolean or date.');
     }
-    // Sheets would evaluate a leading "=" as a formula.
-    if (typeof value === 'string' && value.charAt(0) === '=') {
-      throw new Error(sheetName + ': ' + field + ' must not start with "=".');
+    // A roommate's name gets the same rule with its own error code in assertRoommate_.
+    if (typeof value === 'string' && FORMULA_START_PATTERN.test(value) && !(sheetName === 'ROOMMATES' && field === 'name')) {
+      throw new Error(sheetName + ': ' + field + ' must not start with = + - @ or a tab.');
     }
   });
 
@@ -100,7 +103,7 @@ function assertRoommate_(roommate) {
     fail('name must be 1-40 characters with a letter, no line breaks and no surrounding spaces.');
   }
   // Sheets would read these as formulas or numbers.
-  if (/^[=+\-@]/.test(name)) fail('name must not start with = + - or @.');
+  if (FORMULA_START_PATTERN.test(name)) fail('name must not start with = + - @ or a tab.');
   if (roommate.email.length > 254 || roommate.email !== roommate.email.toLowerCase() || !EMAIL_PATTERN.test(roommate.email)) {
     fail('email must be a valid address in lower case.');
   }

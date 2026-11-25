@@ -50,7 +50,11 @@ const claimFor = (project, overrides = {}) => {
 test('the browser can call exactly the page and sign-in functions; maintenance logic is private', () => {
   const files = backendFiles().filter((file) => file !== WRAPPERS);
   // Sign-in, password change and sign-out; then the schedule, cleaning and vacations, each behind a session.
-  assert.deepEqual(browserCallable(files), ['cancelVacation', 'changePassword', 'doGet', 'endVacation', 'getRotationSchedule', 'listVacations', 'markCleaned', 'saveVacation', 'signIn', 'signOut', 'updateVacation']);
+  assert.deepEqual(browserCallable(files), [
+    'acceptSwap', 'adminAddRoommate', 'adminChangeRole', 'adminDisableSignIn', 'adminEndSessions', 'adminListAccounts', 'adminProvisionAccount', 'adminResetSignIn',
+    'cancelSwap', 'cancelVacation', 'changePassword', 'declineSwap', 'doGet', 'endVacation', 'getRotationSchedule', 'listCleaningHistory', 'listSwaps', 'listVacations',
+    'markCleaned', 'requestSwap', 'runFridayReminder', 'saveVacation', 'signIn', 'signOut', 'updateVacation',
+  ]);
   for (const file of backendFiles()) {
     assert.doesNotMatch(read(`src/backend/${file}`), /^(const|let|var) [A-Za-z0-9]+ = (async )?(function|\()/m, `${file}: functions must be declarations`);
   }
@@ -61,10 +65,10 @@ test('the browser can call exactly the page and sign-in functions; maintenance l
   }
   for (const [file, source] of [...backendFiles().map((f) => [f, read(`src/backend/${f}`)])]) {
     if (file === WRAPPERS) continue;
-    assert.doesNotMatch(source, /^function (setupDatabase|diagnoseDatabase|onboardRoommate|resolveOverdueTurn|createAccount|resetAccountPassword)\(/m, `${file}: maintenance entry points must be private`);
+    assert.doesNotMatch(source, /^function (setupDatabase|diagnoseDatabase|onboardRoommate|resolveOverdueTurn|createAccount|resetAccountPassword|previewFridayReminder|installFridayReminder|removeFridayReminder)\(/m, `${file}: maintenance entry points must be private`);
   }
   for (const file of fs.readdirSync(path.join(ROOT, 'src', 'frontend'))) {
-    assert.doesNotMatch(read(`src/frontend/${file}`), /setupDatabase|diagnoseDatabase|onboardRoommate|resolveOverdueTurn|createAccount|resetAccountPassword/, `${file}: the page never calls maintenance`);
+    assert.doesNotMatch(read(`src/frontend/${file}`), /setupDatabase|diagnoseDatabase|onboardRoommate|resolveOverdueTurn|createAccount|resetAccountPassword|previewFridayReminder|installFridayReminder|removeFridayReminder|runFridayReminder/, `${file}: the page never calls maintenance`);
   }
 });
 
@@ -78,12 +82,12 @@ test('the separate admin projects are gone, and there is one web app project per
   assert.doesNotMatch(read('README.md'), /push-admin|admin project|dev-admin|prod-admin/i);
 });
 
-test('the temporary editor wrappers are six one-line delegations, and only exist while the web app is owner-only', () => {
+test('the temporary editor wrappers are nine one-line delegations, and only exist while the web app is owner-only', () => {
   const file = path.join(ROOT, 'src', 'backend', WRAPPERS);
   if (!fs.existsSync(file)) return; // deleted for release: nothing left to check
   const source = fs.readFileSync(file, 'utf8');
-  assert.deepEqual(browserCallable([WRAPPERS]), ['createAccount', 'diagnoseDatabase', 'onboardRoommate', 'resetAccountPassword', 'resolveOverdueTurn', 'setupDatabase']);
-  for (const name of ['setupDatabase', 'diagnoseDatabase', 'onboardRoommate', 'resolveOverdueTurn', 'createAccount', 'resetAccountPassword']) {
+  assert.deepEqual(browserCallable([WRAPPERS]), ['createAccount', 'diagnoseDatabase', 'installFridayReminder', 'onboardRoommate', 'previewFridayReminder', 'removeFridayReminder', 'resetAccountPassword', 'resolveOverdueTurn', 'setupDatabase']);
+  for (const name of ['setupDatabase', 'diagnoseDatabase', 'onboardRoommate', 'resolveOverdueTurn', 'createAccount', 'resetAccountPassword', 'previewFridayReminder', 'installFridayReminder', 'removeFridayReminder']) {
     assert.match(source, new RegExp(`function ${name}\\(\\) {\\n  return ${name}_\\(\\);\\n}`), name);
   }
   assert.match(source, /TEMPORARY/);
@@ -98,7 +102,7 @@ test('even while the wrappers exist, a browser caller is refused: closed window,
     const before = spreadsheet.snapshot();
     const project = webApp(spreadsheet, { maintenance: true, ...options });
     if (options.maintenance === false) project.properties.MAINTENANCE_UNTIL = undefined;
-    for (const name of ['setupDatabase', 'diagnoseDatabase', 'onboardRoommate', 'resolveOverdueTurn', 'createAccount', 'resetAccountPassword']) assert.throws(() => project.get(name)(), pattern, name);
+    for (const name of ['setupDatabase', 'diagnoseDatabase', 'onboardRoommate', 'resolveOverdueTurn', 'createAccount', 'resetAccountPassword', 'previewFridayReminder', 'installFridayReminder', 'removeFridayReminder']) assert.throws(() => project.get(name)(), pattern, name);
     assert.deepEqual(project.opened, []);
     assert.equal(spreadsheet.snapshot(), before);
   }
@@ -146,6 +150,41 @@ test('the push script refuses to ship the wrappers once access is widened, in ei
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('PROD never deploys the wrappers, and push:prod is the maintenance path: HEAD only, clean tree, confirmation, no deployment', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chorenest-prod-'));
+  try {
+    for (const entry of ['scripts', 'src', 'package.json']) fs.cpSync(path.join(ROOT, entry), path.join(dir, entry), { recursive: true });
+    for (const environment of ['DEV', 'PROD']) {
+      fs.writeFileSync(path.join(dir, `.clasp.${environment.toLowerCase()}.json`), JSON.stringify({ environment, scriptId: `FAKE${environment}${environment}`, rootDir: 'src' }));
+    }
+    fs.writeFileSync(path.join(dir, 'src', 'backend', WRAPPERS), 'function setupDatabase() {}\n');
+    const run = (env, action) => {
+      const result = spawnSync(process.execPath, ['scripts/clasp-env.js', env, action], { cwd: dir, encoding: 'utf8' });
+      return { status: result.status, output: result.stderr + result.stdout };
+    };
+    // The manifest is owner-only (MYSELF), which still does not let PROD deploy them.
+    const deploy = run('prod', 'deploy');
+    assert.equal(deploy.status, 1);
+    assert.match(deploy.output, /must not be deployed to PROD/);
+    assert.match(deploy.output, /push:prod/);
+    // A PROD push passes the wrapper guard (it never deploys) and goes on to the personal-login check.
+    const push = run('prod', 'push');
+    assert.doesNotMatch(push.output, /EditorTools\.js/);
+    assert.match(push.output, /no personal clasp credentials/);
+    // DEV is unchanged: owner-only access may still deploy the wrappers.
+    assert.doesNotMatch(run('dev', 'deploy').output, /must not be deployed to PROD/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
+  const script = read('scripts/clasp-env.js');
+  assert.match(read('package.json'), /"push:prod": "node scripts\/clasp-env\.js prod push"/);
+  assert.match(script, /if \(action === 'deploy' \|\| env === 'prod'\) \{[\s\S]*?requires a clean working tree/, 'PROD push needs a clean tree');
+  assert.match(script, /if \(env === 'prod'\) \{\s*if \(!\(await confirmProd\(config, action\)\)\)/, 'PROD push needs the typed confirmation');
+  assert.match(script, /runClasp\(env, \['push', '--force'\]\);\s*if \(action === 'push'\) return;/, 'push returns before any deploy call');
+  assert.doesNotMatch(script.split("if (action === 'push') return;")[0], /\['deploy'/, 'no deploy call before the push-only return');
 });
 
 test('deployment access is unchanged: the web app runs as the deployer and is private to the owner', () => {
@@ -232,7 +271,7 @@ test('an unknown error code can never reach the browser, and every browser-reach
 
   const messages = project.get('PUBLIC_ERROR_MESSAGES');
   // Only maintenance code, which the browser cannot call, uses the other codes.
-  const maintenanceOnly = ['ROOMMATE_INVALID', 'MAINTENANCE_CLOSED', 'ONBOARDING_INVALID', 'ONBOARDING_DUPLICATE', 'ONBOARDING_INCOMPLETE', 'RESOLVE_INVALID', 'TURN_NOT_OVERDUE', 'RESOLVE_MISMATCH', 'ACCOUNT_INVALID', 'ACCOUNT_EXISTS', 'ACCOUNT_MISSING'];
+  const maintenanceOnly = ['MAINTENANCE_CLOSED', 'RESOLVE_INVALID', 'TURN_NOT_OVERDUE', 'RESOLVE_MISMATCH'];
   for (const file of backendFiles()) {
     for (const [, code] of read(`src/backend/${file}`).matchAll(/appError_\('([A-Z_]+)'/g)) {
       assert.ok(code in messages || maintenanceOnly.includes(code), `${file}: ${code} has no public message`);

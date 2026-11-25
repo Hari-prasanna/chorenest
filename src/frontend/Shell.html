@@ -7,23 +7,9 @@ const BETA_NOTICE = 'Some issues may take longer to fix while the admin is away.
 // How the signed-in roommate's role (from the server) is shown. It is a label only: the server decides what is allowed.
 const ROLE_LABELS = { ADMIN: 'Admin', ROOMMATE: 'Roommate' };
 
-const WORK_IN_PROGRESS = {
-  swaps: { icon: '🔄', title: 'Swaps', text: 'Trading a cleaning turn with a roommate will live here.' },
-  history: { icon: '🕘', title: 'History', text: 'A look back at who cleaned and when will live here.' },
-};
-
 function renderBetaNotice() {
   return '<div class="beta-notice-body"><p><strong>ChoreNest is in beta.</strong> ' + escapeHtml(BETA_NOTICE) + '</p>' +
     '<button class="button button-quiet" type="button" data-action="dismiss-beta">Got it</button></div>';
-}
-
-// An honest placeholder: no buttons, no forms, nothing that looks like it saves.
-function renderWorkInProgress(tab) {
-  const page = WORK_IN_PROGRESS[tab];
-  return '<section class="card state wip" aria-labelledby="wip-' + tab + '"><span class="state-icon" aria-hidden="true">' + page.icon + '</span>' +
-    '<h2 class="panel-title" id="wip-' + tab + '">' + escapeHtml(page.title) + '</h2>' +
-    '<p><span class="wip-badge">Work in progress</span></p>' +
-    '<p>' + escapeHtml(page.text) + '</p><p>Nothing to do here yet.</p></section>';
 }
 
 function roleLabel(viewer) {
@@ -45,6 +31,9 @@ function renderProfileDialog(viewer) {
   return '<div class="dialog-body"><h2 id="profile-title">Profile</h2>' +
     '<div class="profile-card">' + avatar(viewer, 'md') + '<div><p class="name">' + escapeHtml(displayName(viewer)) + '</p>' +
     '<p class="profile-role"><span class="badge badge-role">' + escapeHtml(roleLabel(viewer)) + '</span> · Signed in</p></div></div>' +
+    (viewer.role === 'ADMIN'
+      ? '<p class="profile-admin"><button class="button button-quiet profile-admin-button" type="button" data-action="open-admin"><span aria-hidden="true">🗂️</span> Manage household</button></p>'
+      : '') +
     '<p class="profile-note">Signing out ends your session on all your devices.</p>' +
     '<div class="dialog-actions">' +
     '<button class="button button-quiet" type="button" data-action="sign-out">Sign out</button>' +

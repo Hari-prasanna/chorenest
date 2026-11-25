@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // Runs clasp against exactly one environment's Apps Script project.
 // Usage: node scripts/clasp-env.js <dev|prod> <push|deploy>
+//   push    uploads src/ as the project's HEAD (what the editor and installed triggers run). It never creates or
+//           changes a deployment, so the version the roommates use stays as it is.
+//   deploy  pushes, then updates the deployment (the version the web app URL serves).
 //
 // Every run also passes ChoreNest's own personal credential file via --auth (see clasp-auth.js),
 // so a work login in ~/.clasprc.json is never used and a missing login fails instead of falling back.
@@ -50,9 +53,13 @@ function readConfig(env) {
   return config;
 }
 
-// The temporary editor-only wrappers are browser-callable, so they may only ship while the web app is owner-only.
-function assertWrappersAreSafe() {
+// The temporary editor-only wrappers are browser-callable, so they may only ship while the web app is owner-only,
+// and a PROD deployment never contains them: PROD maintenance uses `push` (HEAD only) and no deployment.
+function assertWrappersAreSafe(env, action) {
   if (!fs.existsSync(path.join(ROOT, 'src', 'backend', 'EditorTools.js'))) return;
+  if (env === 'prod' && action === 'deploy') {
+    fail('src/backend/EditorTools.js must not be deployed to PROD. Delete it and commit before deploying; for maintenance use "npm run push:prod", which never deploys.');
+  }
   const { webapp } = JSON.parse(fs.readFileSync(path.join(ROOT, 'src', 'appsscript.json'), 'utf8'));
   if (!webapp || webapp.access !== 'MYSELF' || webapp.executeAs !== 'USER_DEPLOYING') {
     fail('src/backend/EditorTools.js (temporary editor-only wrappers) must be deleted before the web app is opened to anyone but its owner.');
@@ -78,14 +85,17 @@ function runClasp(env, args) {
   if (result.status !== 0) fail(`clasp ${args[0]} failed for ${env.toUpperCase()}.`);
 }
 
-function confirmProd(config) {
-  if (!process.stdin.isTTY) fail('PROD deployment requires an interactive terminal.');
+function confirmProd(config, action) {
+  if (!process.stdin.isTTY) fail(`PROD ${action} requires an interactive terminal.`);
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   return new Promise((resolve) => {
-    console.log('\n*** PRODUCTION DEPLOYMENT ***');
+    console.log(action === 'push' ? '\n*** PRODUCTION PUSH (editor code only; the deployment is not changed) ***' : '\n*** PRODUCTION DEPLOYMENT ***');
     console.log(`Script ID:     ${config.scriptId}`);
-    console.log(`Deployment ID: ${config.deploymentId || '(none: a new deployment will be created)'}`);
+    if (action === 'deploy') console.log(`Deployment ID: ${config.deploymentId || '(none: a new deployment will be created)'}`);
+    if (fs.existsSync(path.join(ROOT, 'src', 'backend', 'EditorTools.js'))) {
+      console.log('WARNING: EditorTools.js is included. Installed triggers run this code until you push the release commit again.');
+    }
     console.log(`Commit:        ${git(['rev-parse', '--short', 'HEAD'])}`);
     rl.question('\nType PROD to continue: ', (answer) => {
       rl.close();
@@ -114,7 +124,7 @@ async function main() {
     fail('.clasp.dev.json and .clasp.prod.json share the same deploymentId.');
   }
 
-  assertWrappersAreSafe();
+  assertWrappersAreSafe(env, action);
 
   // Fail closed: without the personal login nothing is pushed or deployed, and no other account is tried.
   const login = checkPersonalAuth();
@@ -127,11 +137,11 @@ async function main() {
   // A versioned deployment must be reproducible from a commit, in every environment, and PROD never receives
   // uncommitted code at all. Pushing DEV HEAD from a dirty tree stays allowed.
   if (action === 'deploy' || env === 'prod') {
-    if (!commit) fail(`${env.toUpperCase()} deployment requires a git commit.`);
-    if (dirty) fail(`${env.toUpperCase()} deployment requires a clean working tree. Commit or stash your changes.`);
+    if (!commit) fail(`${env.toUpperCase()} ${action} requires a git commit.`);
+    if (dirty) fail(`${env.toUpperCase()} ${action} requires a clean working tree. Commit or stash your changes.`);
   }
   if (env === 'prod') {
-    if (!(await confirmProd(config))) fail('PROD deployment cancelled.');
+    if (!(await confirmProd(config, action))) fail(`PROD ${action} cancelled.`);
   }
 
   // --force overwrites the remote manifest without an interactive prompt;

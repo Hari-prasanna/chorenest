@@ -33,6 +33,42 @@ function schedule(extra = {}) {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const at = (days) => new Date(Date.now() + days * DAY_MS).toISOString();
 const weekend = (days, status) => ({ weekend_starts_at: at(days), due_at: at(days + 2), status });
+/** The latest cleanings, newest first: a completion, a vacation skip and a turn closed by the owner. */
+const cleaningHistory = () => ({
+  ok: true,
+  limit: 10,
+  entries: [
+    { log_id: 'l3', roommate: person('Jijo'), weekend_starts_at: day(-1), due_at: new Date(Date.UTC(2026, 0, 11, 23)).toISOString(), outcome: 'completed', completed_at: '2026-01-11T17:30:00.000Z', resolved_at: '2026-01-11T17:30:00.000Z', swapped: false },
+    { log_id: 'l2', roommate: person('Arun'), weekend_starts_at: day(-2), due_at: new Date(Date.UTC(2026, 0, 4, 23)).toISOString(), outcome: 'vacation_skipped', completed_at: null, resolved_at: '2026-01-03T08:00:00.000Z', swapped: false },
+    { log_id: 'l1', roommate: person('Hari'), weekend_starts_at: day(-3), due_at: new Date(Date.UTC(2025, 11, 28, 23)).toISOString(), outcome: 'admin_resolved', completed_at: null, resolved_at: '2026-01-02T09:00:00.000Z', swapped: false },
+  ],
+});
+
+/** Swaps as the server reports them for Jijo: one asked of him by Hari, plus the turns that could be swapped. */
+const swapsFor = () => ({
+  ok: true,
+  swaps: [{
+    swap_id: 'swap-1', status: 'pending', direction: 'incoming', partner: person('Hari'),
+    your_due_at: new Date(Date.UTC(2026, 0, 25, 23)).toISOString(), their_due_at: new Date(Date.UTC(2026, 1, 8, 23)).toISOString(),
+    your_weekend_starts_at: day(1), their_weekend_starts_at: day(3), not_applied: false, created_at: '2026-01-12T10:00:00.000Z',
+  }],
+  turns: [
+    { owner: person('Jijo'), weekend_starts_at: day(1), due_at: new Date(Date.UTC(2026, 0, 25, 23)).toISOString() },
+    { owner: person('Arun'), weekend_starts_at: day(2), due_at: new Date(Date.UTC(2026, 1, 1, 23)).toISOString() },
+    { owner: person('Hari'), weekend_starts_at: day(3), due_at: new Date(Date.UTC(2026, 1, 8, 23)).toISOString() },
+  ],
+});
+
+/** The admin section's account list: Hari (you, ADMIN), Jijo waiting for a first sign-in, Arun without an account. */
+const accounts = () => ({
+  ok: true,
+  accounts: [
+    { roommate_id: 'id-Hari', name: 'Hari', member_code: 'HRA-001', username: 'hari', role: 'ADMIN', status: 'active', position: 1, is_you: true },
+    { roommate_id: 'id-Jijo', name: 'Jijo', member_code: 'JJX-002', username: 'jijo', role: 'ROOMMATE', status: 'temporary', position: 2, is_you: false },
+    { roommate_id: 'id-Arun', name: 'Arun', member_code: 'ARN-003', username: null, role: null, status: 'none', position: 3, is_you: false },
+  ],
+});
+
 /** The signed-in roommate as the server reports it. Hari holds the ADMIN role in these tests. */
 const viewerOf = (name, extra = {}) => ({ roommate_id: `id-${name}`, name, role: name === 'Hari' ? 'ADMIN' : 'ROOMMATE', must_change_password: false, ...extra });
 const FAR_FUTURE = '2099-01-01T00:00:00.000Z';
@@ -49,7 +85,7 @@ const vacations = () => ({
 /** Installs the mock before the page's own scripts run. `config` is plain data, so it can cross into the browser. */
 async function installMock(page, config = {}) {
   await page.addInitScript((settings) => {
-    window.__mock = Object.assign({ delay: 0, scheduleResponses: [], vacationsResponse: null, cleanResponse: { ok: true }, responses: {}, viewer: null }, settings);
+    window.__mock = Object.assign({ delay: 0, scheduleResponses: [], vacationsResponse: null, cleanResponse: { ok: true }, responses: {}, viewer: null, accounts: null, history: null, swaps: null }, settings);
     window.__calls = [];
     // `hold: true` parks every answer until the test calls window.__mock.release(), so loading states can be
     // asserted without racing a timer.
@@ -95,6 +131,16 @@ async function installMock(page, config = {}) {
             window.__mock.viewer = { roommate_id: `id-${display}`, name: display, role: 'ROOMMATE', must_change_password: false };
             return { ok: true, session: { token: `token-${username}`, expires_at: '2099-01-01T00:00:00.000Z' }, viewer: window.__mock.viewer };
           }
+          if (name === 'adminListAccounts') return window.__mock.accounts;
+          if (name === 'listSwaps' && !Object.prototype.hasOwnProperty.call(window.__mock.responses, name)) return window.__mock.swaps;
+          if (name === 'listCleaningHistory' && !Object.prototype.hasOwnProperty.call(window.__mock.responses, name)) return window.__mock.history;
+          if (name === 'adminAddRoommate' || name === 'adminProvisionAccount' || name === 'adminResetSignIn') {
+            const request = args[0] || {};
+            const known = (window.__mock.accounts.accounts || []).find((a) => a.roommate_id === request.roommate_id);
+            const account = known || { roommate_id: 'id-New', name: request.name, member_code: 'NEW-004', username: request.username, role: request.role, status: 'temporary', position: 4, is_you: false };
+            return { ok: true, account: { ...account, status: 'temporary', username: account.username || request.username }, temporary_password: 'Xy7kP3qRt9mWb2Nc', expires_at: '2026-01-16T12:00:00.000Z' };
+          }
+          if (name.startsWith('admin')) return { ok: true, account: (window.__mock.accounts.accounts || [])[1] };
           if (name === 'changePassword') {
             window.__mock.viewer = { ...window.__mock.viewer, must_change_password: false };
             return { ok: true, session: { token: 'token-changed', expires_at: '2099-01-01T00:00:00.000Z' }, viewer: window.__mock.viewer };
@@ -111,4 +157,4 @@ async function installMock(page, config = {}) {
   }, config);
 }
 
-module.exports = { installMock, schedule, vacations, person, viewerOf, FAR_FUTURE };
+module.exports = { installMock, schedule, vacations, accounts, cleaningHistory, swapsFor, person, viewerOf, FAR_FUTURE };

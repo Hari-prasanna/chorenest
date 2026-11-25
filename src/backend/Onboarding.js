@@ -14,7 +14,12 @@ function onboardRoommate_() {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(LOCK_WAIT_MS)) throw appError_('BUSY', 'Another save is running. Try again in a moment.');
   try {
-    const summary = onboardUnderLock_();
+    const result = onboardUnderLock_(readOnboardingRequest_());
+    const properties = PropertiesService.getScriptProperties();
+    ONBOARDING_KEYS.forEach(function (key) {
+      properties.deleteProperty(key);
+    });
+    const summary = (result.finishing ? 'Finished onboarding ' : 'Added ') + result.roommate.member_code + ' (' + result.roommate.name + ') at rotation position ' + result.position + '.';
     console.log(summary);
     return summary;
   } finally {
@@ -29,16 +34,28 @@ function invalidOnboarding_(message) {
 function readOnboardingRequest_() {
   const properties = PropertiesService.getScriptProperties();
   const read = function (key) {
-    return (properties.getProperty(key) || '').trim();
+    return properties.getProperty(key) || '';
   };
-  const name = read('ONBOARD_NAME').replace(/\s+/g, ' ');
-  const email = read('ONBOARD_EMAIL').toLowerCase();
-  if (!name || !email) throw invalidOnboarding_('Set the Script Properties ONBOARD_NAME and ONBOARD_EMAIL first.');
-  const position = read('ONBOARD_POSITION');
+  return normalizeOnboardingRequest_({ name: read('ONBOARD_NAME'), email: read('ONBOARD_EMAIL'), telegram: read('ONBOARD_TELEGRAM'), position: read('ONBOARD_POSITION') }, {
+    missing: 'Set the Script Properties ONBOARD_NAME and ONBOARD_EMAIL first.',
+    position: 'ONBOARD_POSITION must be a whole number from 1 to 9999.',
+  });
+}
+
+/** Trims and checks a new roommate's details, from Script Properties or from the admin page. */
+function normalizeOnboardingRequest_(raw, messages) {
+  const say = messages || { missing: 'A name and an email are required.', position: 'The rotation position must be a whole number from 1 to 9999.' };
+  const text = function (value) {
+    return typeof value === 'string' ? value.trim() : '';
+  };
+  const name = text(raw.name).replace(/\s+/g, ' ');
+  const email = text(raw.email).toLowerCase();
+  if (!name || !email) throw invalidOnboarding_(say.missing);
+  const position = text(raw.position);
   if (position !== '' && !/^[1-9]\d{0,3}$/.test(position)) {
-    throw invalidOnboarding_('ONBOARD_POSITION must be a whole number from 1 to 9999.');
+    throw invalidOnboarding_(say.position);
   }
-  return { name: name, email: email, telegram: read('ONBOARD_TELEGRAM').replace(/^@/, ''), position: position === '' ? null : Number(position) };
+  return { name: name, email: email, telegram: text(raw.telegram).replace(/^@/, ''), position: position === '' ? null : Number(position) };
 }
 
 /** First letter of the first name, then its consonants, then its vowels: John gives JHN. Padded with X. */
@@ -74,9 +91,11 @@ function nextMemberCode_(name, roommates) {
   return code;
 }
 
-/** Everything below runs while holding the lock, so the checks and the writes cannot interleave with another run. */
-function onboardUnderLock_() {
-  const request = readOnboardingRequest_();
+/**
+ * Everything below runs while holding the script lock, so the checks and the writes cannot interleave with another
+ * run. Returns { roommate, position, finishing }.
+ */
+function onboardUnderLock_(request) {
   const records = SheetDb.listMany(['ROOMMATES', 'ROTATION']);
   const positions = records.ROTATION.map(function (slot) {
     return Number(slot.position);
@@ -118,9 +137,5 @@ function onboardUnderLock_() {
     throw appError_('ONBOARDING_INCOMPLETE', roommate.member_code + ' was added but has no rotation position yet. Run onboardRoommate again to finish.');
   }
 
-  const properties = PropertiesService.getScriptProperties();
-  ONBOARDING_KEYS.forEach(function (key) {
-    properties.deleteProperty(key);
-  });
-  return (finishing ? 'Finished onboarding ' : 'Added ') + roommate.member_code + ' (' + roommate.name + ') at rotation position ' + position + '.';
+  return { roommate: roommate, position: position, finishing: finishing };
 }

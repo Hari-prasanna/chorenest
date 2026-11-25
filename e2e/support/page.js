@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { expect } = require('@playwright/test');
-const { installMock, schedule, vacations, viewerOf, FAR_FUTURE } = require('./mock');
+const { installMock, schedule, vacations, accounts, cleaningHistory, swapsFor, viewerOf, FAR_FUTURE } = require('./mock');
 
 const SHOTS = path.join(__dirname, '..', 'results', 'screenshots');
 
@@ -18,7 +18,7 @@ async function openApp(page, { seed = { 'chorenest-beta-notice': 'dismissed' }, 
     if (message.type() === 'error' || message.type() === 'warning') problems.push(`console ${message.type()}: ${message.text()}`);
   });
   page.on('pageerror', (error) => problems.push(`page error: ${error.message}`));
-  await installMock(page, { scheduleResponses: [schedule()], vacationsResponse: vacations(), ...mock });
+  await installMock(page, { scheduleResponses: [schedule()], vacationsResponse: vacations(), accounts: accounts(), history: cleaningHistory(), swaps: swapsFor(), ...mock });
   await page.addInitScript((values) => {
     for (const [key, value] of Object.entries(values)) if (localStorage.getItem(key) === null) localStorage.setItem(key, value);
   }, seed);

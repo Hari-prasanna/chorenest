@@ -46,15 +46,21 @@
         <div id="panel-vacation" hidden></div>
         <div id="panel-swaps" hidden></div>
         <div id="panel-history" hidden></div>
+        <div id="panel-admin" hidden></div>
       </main>
     </div>
     <dialog id="profile-dialog" class="dialog" aria-labelledby="profile-title"></dialog>
     <dialog id="confirm-dialog" class="dialog" aria-labelledby="confirm-title"></dialog>
     <dialog id="vacation-dialog" class="dialog dialog-wide" aria-labelledby="vacation-title"></dialog>
+    <dialog id="admin-dialog" class="dialog dialog-wide" aria-labelledby="admin-title"></dialog>
+    <dialog id="swap-dialog" class="dialog dialog-wide" aria-labelledby="swap-title"></dialog>
     <?!= include_('frontend/ScheduleView') ?>
     <?!= include_('frontend/VacationView') ?>
+    <?!= include_('frontend/HistoryView') ?>
+    <?!= include_('frontend/SwapView') ?>
     <?!= include_('frontend/Session') ?>
     <?!= include_('frontend/LoginView') ?>
+    <?!= include_('frontend/AdminView') ?>
     <?!= include_('frontend/Shell') ?>
     <?!= include_('frontend/App') ?>
   </body>

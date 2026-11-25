@@ -34,7 +34,7 @@ const SheetDb = {
       }
       const value = changes[field];
       if (!isBlank_(value) && !isCellValue_(value)) throw new Error(sheetName + ': ' + field + ' must be a string, number, boolean or date.');
-      if (typeof value === 'string' && value.charAt(0) === '=') throw new Error(sheetName + ': ' + field + ' must not start with "=".');
+      if (typeof value === 'string' && FORMULA_START_PATTERN.test(value)) throw new Error(sheetName + ': ' + field + ' must not start with = + - @ or a tab.');
     });
     const table = readTable_(openDatabase_(), sheetName);
     // Blank rows are skipped when reading, so find the real row number in the raw values.

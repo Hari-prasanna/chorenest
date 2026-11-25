@@ -72,7 +72,17 @@ test('validateRecord rejects non-cell values and formulas', () => {
   assert.throws(() => validateRecord('ROOMMATES', { ...roommate(), name: { first: 'Alex' } }), /must be a string/);
   assert.throws(() => validateRecord('ROOMMATES', { ...roommate(), name: NaN }), /must be a string/);
   assert.throws(() => validateRecord('ROOMMATES', { ...roommate(), name: new Date('nope') }), /must be a string/);
-  assert.throws(() => validateRecord('ROOMMATES', { ...roommate(), name: '=IMPORTXML("x")' }), /must not start with "="/);
+  assert.throws(() => validateRecord('ROOMMATES', { ...roommate(), name: '=IMPORTXML("x")' }), /must not start with = \+ - @ or a tab/);
+});
+
+test('validateRecord rejects every leading formula character in any text field, and keeps valid data', () => {
+  for (const lead of ['=', '+', '-', '@', '\t', '\r']) {
+    assert.throws(() => validateRecord('ROOMMATES', { ...roommate(), email: lead + 'x@example.com' }), /must not start with/, JSON.stringify(lead));
+  }
+  const log = writableFixture('CLEANING_LOGS');
+  assert.throws(() => validateRecord('CLEANING_LOGS', { ...log, outcome: 'admin_resolved', completed_at: '', notes: '-1+1 reason' }), /must not start with/);
+  validateRecord('ROOMMATES', { ...roommate(), email: 'a+tag@example.com' });
+  validateRecord('CLEANING_LOGS', { ...log, notes: 'Reason: -1 is fine inside' });
 });
 
 test('validateRecord never lets an unperformed cleaning be recorded as completed', () => {
