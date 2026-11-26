@@ -145,16 +145,16 @@ function renderVacationGroups(vacations, selectedId) {
  */
 function renderVacationOverview(view) {
   const plan = view.selectedName
-    ? '<button class="button" type="button" data-action="plan-vacation"><span aria-hidden="true">🏖️</span> Plan vacation</button>'
+    ? '<button class="button" type="button" data-action="plan-vacation">Plan vacation</button>'
     : '';
   let body;
   if (view.status === 'ready') {
     body = view.vacations.length
       ? renderVacationGroups(view.vacations, view.selectedId)
-      : '<section class="card state state-compact"><span class="state-icon" aria-hidden="true">🏡</span><h3>Everyone’s home</h3>' +
+      : '<section class="card state state-compact"><h3>Everyone’s home</h3>' +
         '<p>No vacations are planned.</p></section>';
   } else if (view.status === 'error' || view.status === 'network') {
-    body = '<section class="card state state-compact"><span class="state-icon" aria-hidden="true">🏖️</span><h3>Couldn’t load vacations</h3><p>' +
+    body = '<section class="card state state-compact"><h3>Couldn’t load vacations</h3><p>' +
       (view.status === 'network' ? 'Check your connection and try again.' : 'Try again in a moment.') + '</p>' +
       '<button class="button" type="button" data-action="retry-vacations">Try again</button></section>';
   } else {
@@ -198,7 +198,7 @@ function renderAwaySummary(view) {
 }
 
 function renderVacationSaving() {
-  return '<div class="dialog-body dialog-scroll" role="status"><p class="dialog-emoji" aria-hidden="true">🏖️</p>' +
+  return '<div class="dialog-body dialog-scroll" role="status">' +
     '<h2 id="vacation-title">Saving…</h2></div>';
 }
 
@@ -231,7 +231,7 @@ function renderVacationEditForm(vacation, today, draft, error) {
 }
 
 function renderVacationEndConfirm(vacation, todayIso) {
-  return '<div class="dialog-body dialog-scroll"><p class="dialog-emoji" aria-hidden="true">🏡</p><h2 id="vacation-title">Back already?</h2>' +
+  return '<div class="dialog-body dialog-scroll"><h2 id="vacation-title">Back already?</h2>' +
     '<p>Today, ' + escapeHtml(formatVacationDay(todayIso)) + ', becomes your first day back. Turns from today on count for you again.</p>' +
     '<p class="who-note">Turns that are already done or skipped stay as they are.</p>' +
     '<div class="dialog-actions"><button class="button" type="button" data-action="confirm-end-vacation">Yes, I’m back</button>' +
@@ -240,13 +240,13 @@ function renderVacationEndConfirm(vacation, todayIso) {
 
 // Why "I'm back" could not be saved, in the dialog itself: nothing was changed.
 function renderVacationEndProblem(code) {
-  return '<div class="dialog-body dialog-scroll"><p class="dialog-emoji" aria-hidden="true">🏖️</p><h2 id="vacation-title">Your vacation wasn’t changed</h2>' +
+  return '<div class="dialog-body dialog-scroll"><h2 id="vacation-title">Your vacation wasn’t changed</h2>' +
     '<p class="form-error" role="alert">' + escapeHtml(vacationErrorMessage(code)) + '</p>' +
     '<div class="dialog-actions dialog-actions-single"><button class="button button-quiet" type="button" data-action="close-vacation" autofocus>OK</button></div></div>';
 }
 
 function renderVacationCancelConfirm(vacation) {
-  return '<div class="dialog-body dialog-scroll"><p class="dialog-emoji" aria-hidden="true">🏖️</p><h2 id="vacation-title">Cancel this vacation?</h2>' +
+  return '<div class="dialog-body dialog-scroll"><h2 id="vacation-title">Cancel this vacation?</h2>' +
     '<p>' + escapeHtml(vacation.name) + ': ' + escapeHtml(formatVacationDates(vacation)) + '. Your turns in that time will count again.</p>' +
     '<div class="dialog-actions"><button class="button" type="button" data-action="confirm-cancel-vacation">Yes, cancel it</button>' +
     '<button class="button button-quiet" type="button" data-action="close-vacation" autofocus>Keep it</button></div></div>';

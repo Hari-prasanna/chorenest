@@ -661,12 +661,6 @@
     text-align: center;
   }
 
-  .state-icon {
-    display: block;
-    margin-bottom: 8px;
-    font-size: 2.5rem;
-  }
-
   .state h2 {
     margin: 0 0 8px;
     font-size: 1.25rem;
@@ -749,11 +743,6 @@
   .dialog-body {
     padding: 28px 24px 24px;
     text-align: center;
-  }
-
-  .dialog-emoji {
-    margin: 0 0 6px;
-    font-size: 2.5rem;
   }
 
   .dialog-body h2 {
@@ -1021,10 +1010,6 @@
     color: var(--muted);
   }
 
-  .auth-icon {
-    font-size: 2rem;
-  }
-
   .auth-form {
     display: grid;
   }
@@ -1256,10 +1241,172 @@
     margin-top: 8px;
   }
 
-  .history-detail {
-    margin: 4px 0 0;
-    color: var(--muted);
+  /* History: range chips, the table (stacked rows on phones) and pages */
+  .filter-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 14px 0;
+  }
+
+  .chip {
+    min-height: 40px;
+    padding: 6px 16px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface-soft);
+    color: var(--text);
+    font: inherit;
     font-size: 0.875rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .chip[aria-pressed="true"] {
+    border-color: var(--solid);
+    background: var(--solid);
+    color: var(--on-solid);
+  }
+
+  .history-card {
+    padding: 4px 0;
+  }
+
+  .table-wrap {
+    overflow-x: auto;
+  }
+
+  .history-table {
+    width: 100%;
+    border-collapse: collapse;
+    text-align: left;
+  }
+
+  .history-table th,
+  .history-table td {
+    padding: 12px 10px;
+    vertical-align: middle;
+  }
+
+  .history-table th:first-child,
+  .history-table td:first-child {
+    padding-left: 16px;
+  }
+
+  .history-table th:last-child,
+  .history-table td:last-child {
+    padding-right: 16px;
+    white-space: nowrap;
+  }
+
+  .history-table thead th {
+    color: var(--muted);
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .history-table tbody tr {
+    border-top: 1px solid var(--border);
+  }
+
+  .history-weekend {
+    font-weight: 700;
+    white-space: nowrap;
+  }
+
+  .history-person {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .history-person .name {
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .history-sub {
+    display: block;
+    margin-top: 2px;
+    color: var(--muted);
+    font-size: 0.8125rem;
+    font-weight: 400;
+  }
+
+  .pager {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 14px 0 8px;
+  }
+
+  .pager-status {
+    margin: 0;
+    text-align: center;
+    font-weight: 600;
+  }
+
+  .pager .button[disabled],
+  .vacation-top .button[disabled] {
+    opacity: 0.5;
+    cursor: default;
+  }
+
+  @media (max-width: 639px) {
+    .history-table thead {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+    }
+
+    .history-table,
+    .history-table tbody {
+      display: block;
+    }
+
+    .history-table tr {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 6px 12px;
+      align-items: center;
+      padding: 12px 16px;
+    }
+
+    .history-table th,
+    .history-table td {
+      display: block;
+      padding: 0;
+    }
+
+    .history-table td[data-label="Status"] {
+      grid-column: 2;
+      grid-row: 1;
+      text-align: right;
+    }
+
+    .history-table td[data-label="Roommate"] {
+      grid-column: 1;
+      grid-row: 2;
+    }
+
+    .history-table td[data-label="Resolved"] {
+      grid-column: 2;
+      grid-row: 2;
+      color: var(--muted);
+      font-size: 0.8125rem;
+      text-align: right;
+    }
+
+    .history-weekend {
+      grid-column: 1;
+      grid-row: 1;
+      white-space: normal;
+    }
   }
 
   .role-choice {
@@ -1440,10 +1587,9 @@
       animation: spin 0.8s linear infinite;
     }
 
-    /* Returning to the schedule from another tab shows it at once; History never animates (tab switches are instant). */
+    /* Returning to the schedule from another tab shows it at once. */
     [data-settled="true"] .hero,
-    [data-settled="true"] .timeline-item,
-    #panel-history .timeline-item {
+    [data-settled="true"] .timeline-item {
       animation: none;
     }
 

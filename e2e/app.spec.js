@@ -41,7 +41,7 @@ test.describe('tab navigation', () => {
 
   // Regression: DEV v19 read event.target, so a tap on a tab's icon or label (or on the broom inside "Mark as cleaned")
   // did nothing, and coming back to Schedule replayed the entrance animation.
-  test('a real tap on a tab\'s icon or label switches, and the broom inside Mark as cleaned opens the dialog', async ({ page }) => {
+  test('a real tap on a tab\'s icon or label switches, and Mark as cleaned opens the dialog', async ({ page }) => {
     const { problems } = await openApp(page, { as: HARI });
     await expect(page.locator('.hero')).toBeVisible();
     await page.waitForTimeout(700); // the first entrance animation finishes
@@ -59,7 +59,7 @@ test.describe('tab navigation', () => {
     const animating = await page.evaluate(() => document.getAnimations().map((a) => a.animationName || a.transitionProperty));
     expect(animating, 'returning to Schedule replays no entrance animation').toEqual([]);
 
-    await page.locator('.mark-button span[aria-hidden="true"]').click();
+    await page.locator('.mark-button').click();
     await expect(page.locator('#confirm-dialog')).toBeVisible();
     expect(await calls(page, 'getRotationSchedule'), 'tapping tabs sends nothing').toHaveLength(1);
     expect(problems).toEqual([]);
@@ -796,21 +796,56 @@ test.describe('admin section', () => {
 });
 
 test.describe('history', () => {
-  test('the History tab shows the latest cleanings, newest first, read-only', async ({ page }, testInfo) => {
+  test('the History tab shows the last 14 days as a table, newest first, with range filters', async ({ page }, testInfo) => {
     const { problems } = await openApp(page);
     await expect(page.locator('.hero')).toBeVisible();
     await tab(page, 'history').click();
-    const items = panel(page, 'history').locator('.timeline-item');
-    await expect(items).toHaveCount(3);
-    await expect(items.nth(0)).toContainText('Jijo');
-    await expect(items.nth(0)).toContainText('Cleaned');
-    await expect(items.nth(1)).toContainText('Skipped: away');
-    await expect(items.nth(2)).toContainText('Closed by the app owner');
-    await expect(panel(page, 'history').locator('button, input, form, select')).toHaveCount(0);
-    expect((await calls(page, 'listCleaningHistory'))[0].args[0]).toEqual({ token: 'token-Jijo' });
+    const rows = panel(page, 'history').locator('tbody tr');
+    await expect(rows).toHaveCount(3);
+    await expect(rows.nth(0)).toContainText('Jijo');
+    await expect(rows.nth(0)).toContainText('Cleaned');
+    await expect(rows.nth(1)).toContainText('Skipped: away');
+    await expect(rows.nth(2)).toContainText('Closed by the app owner');
+    const chips = panel(page, 'history').locator('.filter-bar .chip');
+    await expect(chips).toHaveText(['Last 14 days', 'Last 30 days', 'Last 90 days', 'All time']);
+    await expect(chips.nth(0)).toHaveAttribute('aria-pressed', 'true');
+    await expect(panel(page, 'history').locator('input, form, select')).toHaveCount(0);
+    expect((await calls(page, 'listCleaningHistory'))[0].args[0]).toEqual({ token: 'token-Jijo', range: '14d', page: 1 });
     await expectHealthyLayout(page, 'history');
     await shot(page, testInfo, 'history');
+
+    await chips.nth(2).click();
+    await expect(chips.nth(2)).toHaveAttribute('aria-pressed', 'true');
+    await expect(chips.nth(0)).toHaveAttribute('aria-pressed', 'false');
+    const all = await calls(page, 'listCleaningHistory');
+    expect(all[all.length - 1].args[0]).toEqual({ token: 'token-Jijo', range: '90d', page: 1 });
+    await expect(rows).toHaveCount(3);
+    await expectHealthyLayout(page, 'history');
     expect(problems).toEqual([]);
+  });
+
+  test('Download CSV saves the file for the chosen range', async ({ page }) => {
+    const csv = '﻿Weekend start,Weekend end,Roommate,Status,Resolved (Berlin time),Swapped turn\r\n2026-01-10,2026-01-11,Jijo,Cleaned,2026-01-11 18:30,No\r\n';
+    const { problems } = await openApp(page, { responses: { exportCleaningHistory: { ok: true, filename: 'chorenest-history-14d-2026-01-13.csv', csv, count: 1 } } });
+    await tab(page, 'history').click();
+    const button = panel(page, 'history').getByRole('button', { name: 'Download CSV' });
+    await expect(button).toBeEnabled();
+    const [download] = await Promise.all([page.waitForEvent('download'), button.click()]);
+    expect(download.suggestedFilename()).toBe('chorenest-history-14d-2026-01-13.csv');
+    expect(require('node:fs').readFileSync(await download.path(), 'utf8')).toBe(csv);
+    expect((await calls(page, 'exportCleaningHistory'))[0].args[0]).toEqual({ token: 'token-Jijo', range: '14d' });
+    await expect(button).toBeEnabled();
+    expect(problems).toEqual([]);
+  });
+
+  test('an empty range explains itself, offers longer ranges and disables the download', async ({ page }) => {
+    const empty = { ok: true, entries: [], range: '14d', page: 1, page_size: 25, total: 0, pages: 1 };
+    await openApp(page, { history: empty });
+    await tab(page, 'history').click();
+    await expect(panel(page, 'history')).toContainText('No cleanings in the last 14 days');
+    await expect(panel(page, 'history').getByRole('button', { name: 'Download CSV' })).toBeDisabled();
+    await expect(panel(page, 'history').locator('.filter-bar .chip')).toHaveCount(4);
+    await expectHealthyLayout(page, 'history');
   });
 });
 

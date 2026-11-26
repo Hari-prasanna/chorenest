@@ -14,7 +14,6 @@ const STATUS_MESSAGES = {
   overdue: 'Overdue: the nest is waiting for this one.',
   waiting: 'Not open yet. Enjoy the break.',
 };
-const STATUS_EMOJIS = { pending: '✨', overdue: '', waiting: '✨' };
 const STEP_LABELS = ['Up next', 'Then', 'After that'];
 const AVATAR_TONES = 6;
 const CONFIG_CODES = [
@@ -147,21 +146,21 @@ function markableTurn(schedule, selectedId) {
 }
 
 function renderMarkAction(canMark) {
-  return canMark ? '<button class="button mark-button" type="button" data-action="mark-cleaned"><span aria-hidden="true">🧹</span> Mark as cleaned</button>' : '';
+  return canMark ? '<button class="button mark-button" type="button" data-action="mark-cleaned">Mark as cleaned</button>' : '';
 }
 
 function renderConfirmDialog(schedule, selectedId) {
-  return '<div class="dialog-body"><p class="dialog-emoji" aria-hidden="true">🧹</p>' +
+  return '<div class="dialog-body">' +
     '<h2 id="confirm-title">Mark ' + escapeHtml(TASK_NAME) + ' as cleaned?</h2>' +
     '<p>' + escapeHtml(rosterName(schedule, selectedId)) + ', you’re telling everyone the whole home is clean. ' +
     'It’s saved for the household and can’t be undone from the app.</p>' +
     '<div class="dialog-actions">' +
-    '<button class="button" type="button" data-action="confirm-clean">Yes, it’s clean <span aria-hidden="true">✨</span></button>' +
+    '<button class="button" type="button" data-action="confirm-clean">Yes, it’s clean</button>' +
     '<button class="button button-quiet" type="button" data-action="cancel-clean" autofocus>Not yet</button></div></div>';
 }
 
 function renderSaving() {
-  return '<div class="dialog-body" role="status"><p class="dialog-emoji" aria-hidden="true">🧹</p><h2 id="confirm-title">Saving…</h2></div>';
+  return '<div class="dialog-body" role="status"><h2 id="confirm-title">Saving…</h2></div>';
 }
 
 const CLEAN_ERROR_MESSAGES = {
@@ -187,7 +186,7 @@ function cleanNotice(result, name) {
 
 function renderNotice(notice) {
   return '<p class="notice notice-' + escapeHtml(notice.kind) + '" role="' + (notice.kind === 'error' ? 'alert' : 'status') + '">' +
-    (notice.kind === 'success' ? '<span aria-hidden="true">✨</span> ' : '') + escapeHtml(notice.text) + '</p>';
+    escapeHtml(notice.text) + '</p>';
 }
 
 function renderBadge(status) {
@@ -203,9 +202,8 @@ function renderCurrentTurn(turn, canMark) {
     '<div class="hero-top"><h2 class="eyebrow" id="current-title">Current turn</h2>' + renderBadge(turn.status) + '</div>' +
     '<div class="hero-person">' + avatar(turn.assignee, 'lg') +
     '<div class="person-text"><p class="name">' + escapeHtml(displayName(turn.assignee)) + '</p>' +
-    '<p class="task"><span aria-hidden="true">🧹</span> ' + escapeHtml(TASK_NAME) + '</p></div></div>' +
-    '<p class="message">' + (STATUS_EMOJIS[status] ? '<span aria-hidden="true">' + STATUS_EMOJIS[status] + '</span> ' : '') +
-    escapeHtml(STATUS_MESSAGES[status]) + '</p>' +
+    '<p class="task">' + escapeHtml(TASK_NAME) + '</p></div></div>' +
+    '<p class="message">' + escapeHtml(STATUS_MESSAGES[status]) + '</p>' +
     '<dl class="facts">' +
     '<div><dt>Cleaning weekend</dt><dd>' + escapeHtml(formatWeekend(turn)) + '</dd></div>' +
     '<div><dt>' + (overdue ? 'Was due' : 'Due') + '</dt><dd>' + escapeHtml('End of ' + formatDueDay(turn)) + '</dd></div></dl>' +
@@ -240,8 +238,8 @@ function renderLoading() {
     '<div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div></div>';
 }
 
-function renderState(icon, title, message, code) {
-  return '<section class="card state"><span class="state-icon" aria-hidden="true">' + icon + '</span>' +
+function renderState(title, message, code) {
+  return '<section class="card state">' +
     '<h2>' + escapeHtml(title) + '</h2><p>' + escapeHtml(message) + '</p>' +
     '<button class="button" type="button" data-action="retry">Try again</button>' +
     (code ? '<p class="code">Error code: ' + escapeHtml(code) + '</p>' : '') + '</section>';
@@ -250,18 +248,18 @@ function renderState(icon, title, message, code) {
 // Server messages can name configuration details, so visitors only get a code and a plain explanation.
 function renderProblem(code) {
   if (code === 'ROTATION_EMPTY') {
-    return renderState('✨', 'No rotation yet', 'Once roommates are added to the rotation, the cleaning schedule will appear here.');
+    return renderState('No rotation yet', 'Once roommates are added to the rotation, the cleaning schedule will appear here.');
   }
   if (CONFIG_CODES.indexOf(code) !== -1) {
-    return renderState('🧹', 'ChoreNest isn’t set up correctly', 'Ask the app owner to check the configuration, then try again.', code);
+    return renderState('ChoreNest isn’t set up correctly', 'Ask the app owner to check the configuration, then try again.', code);
   }
   if (code === 'ROTATION_DATA_INVALID') {
-    return renderState('🧹', 'The rotation data needs attention', 'Something in the rotation records isn’t valid. Ask the app owner to check the Google Sheet.', code);
+    return renderState('The rotation data needs attention', 'Something in the rotation records isn’t valid. Ask the app owner to check the Google Sheet.', code);
   }
   if (code === 'REQUEST_FAILED') {
-    return renderState('🧹', 'Couldn’t reach the server', 'Check your connection and try again.', code);
+    return renderState('Couldn’t reach the server', 'Check your connection and try again.', code);
   }
-  return renderState('🧹', 'Something went wrong', 'Try again in a moment.', code);
+  return renderState('Something went wrong', 'Try again in a moment.', code);
 }
 
 function isValidPerson(person) {

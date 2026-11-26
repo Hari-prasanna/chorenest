@@ -127,6 +127,8 @@ test('adding refuses duplicates and bad details before writing anything', () => 
     [{ name: '' }, 'ONBOARDING_INVALID'],
     [{ name: '=SUM(A1)' }, 'ROOMMATE_INVALID'],
     [{ email: 'not an email' }, 'ROOMMATE_INVALID'],
+    [{ email: '+1@example.com' }, 'ROOMMATE_INVALID'],
+    [{ email: '-x@example.com' }, 'ROOMMATE_INVALID'],
     [{ role: 'OWNER' }, 'INVALID_REQUEST'],
     [{ name: 'x'.repeat(300) }, 'INVALID_REQUEST'],
   ];

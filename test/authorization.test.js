@@ -26,6 +26,7 @@ const PUBLIC = ['doGet', 'signIn', 'runFridayReminder'];
 const HOUSEHOLD = {
   getRotationSchedule: () => ({}),
   listCleaningHistory: () => ({}),
+  exportCleaningHistory: () => ({}),
   listSwaps: () => ({}),
   listVacations: () => ({}),
   markCleaned: () => ({ rotation_id: ID, due_at: '2026-01-18T23:00:00.000Z' }),

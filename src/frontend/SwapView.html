@@ -107,10 +107,10 @@ function renderSwapsPanel(view) {
     });
     body = view.swaps.length
       ? renderSwapGroup('Asked of you', incoming) + renderSwapGroup('You asked', outgoing) + renderSwapGroup('Accepted', accepted)
-      : '<section class="card state state-compact"><span class="state-icon" aria-hidden="true">🔄</span><h3>No swaps yet</h3>' +
+      : '<section class="card state state-compact"><h3>No swaps yet</h3>' +
         '<p>' + (canRequest ? 'Ask a roommate to trade a cleaning weekend.' : 'There is no turn you could swap right now.') + '</p></section>';
   } else if (view.status === 'error' || view.status === 'network') {
-    body = '<section class="card state state-compact"><span class="state-icon" aria-hidden="true">🔄</span><h3>Couldn’t load the swaps</h3><p>' +
+    body = '<section class="card state state-compact"><h3>Couldn’t load the swaps</h3><p>' +
       (view.status === 'network' ? 'Check your connection and try again.' : 'Try again in a moment.') + '</p>' +
       '<button class="button" type="button" data-action="swap-retry">Try again</button></section>';
   } else {

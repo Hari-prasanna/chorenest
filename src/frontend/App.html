@@ -51,6 +51,11 @@ let pendingSwap = null; // { kind: 'request', draft } or { kind: 'accept' | 'dec
 let historyData = null;
 let historyStatus = 'idle'; // idle | loading | ready | error | network
 let historyLoadedAt = 0;
+let historyRange = HISTORY_DEFAULT_RANGE; // the time range and page shown; the server filters and pages
+let historyPage = 1;
+let historyRequestId = 0; // an older answer never replaces a newer one
+let historyExporting = false;
+let historyNotice = null;
 // Admin section: the account list and the one open action (a form, a confirmation or a one-time password).
 let adminAccounts = null;
 let adminStatus = 'idle'; // idle | loading | ready | error | network
@@ -132,6 +137,11 @@ function resetSignedInState() {
   adminNotice = null;
   historyData = null;
   historyStatus = 'idle';
+  historyRange = HISTORY_DEFAULT_RANGE;
+  historyPage = 1;
+  historyRequestId++;
+  historyExporting = false;
+  historyNotice = null;
   panels.history.innerHTML = '';
   swapData = null;
   swapStatus = 'idle';
@@ -545,32 +555,87 @@ function finishSwapDialog() {
 // ---------- history (read-only) ----------
 
 function renderHistoryView() {
+  const data = historyData;
   panels.history.innerHTML = renderHistoryPanel({
     status: historyStatus === 'idle' ? 'loading' : historyStatus,
-    entries: (historyData && historyData.entries) || [],
-    limit: historyData && historyData.limit,
+    range: historyRange,
+    page: data ? data.page : historyPage,
+    pages: data ? data.pages : 1,
+    total: data ? data.total : 0,
+    pageSize: data ? data.page_size : 25,
+    entries: (data && data.entries) || [],
+    exporting: historyExporting,
+    notice: historyNotice,
   });
 }
 
 function loadHistory() {
   historyStatus = 'loading';
+  historyNotice = null;
   renderHistoryView();
   const epoch = sessionEpoch;
+  const requestId = ++historyRequestId;
   google.script.run
     .withSuccessHandler(function (result) {
-      if (epoch !== sessionEpoch || handleSessionRefusal(result)) return;
+      if (epoch !== sessionEpoch || requestId !== historyRequestId || handleSessionRefusal(result)) return;
       historyData = isValidHistory(result) ? result : null;
       historyStatus = historyData ? 'ready' : 'error';
+      if (historyData) {
+        historyRange = historyData.range; // the server may have moved to the last page
+        historyPage = historyData.page;
+      }
       historyLoadedAt = Date.now();
       renderHistoryView();
     })
     .withFailureHandler(function () {
-      if (epoch !== sessionEpoch) return;
+      if (epoch !== sessionEpoch || requestId !== historyRequestId) return;
       historyData = null;
       historyStatus = 'network';
       renderHistoryView();
     })
-    .listCleaningHistory({ token: sessionToken() });
+    .listCleaningHistory({ token: sessionToken(), range: historyRange, page: historyPage });
+}
+
+// Saves text as a file through a temporary link. Returns false when the browser cannot.
+function saveTextFile(filename, text) {
+  try {
+    const url = URL.createObjectURL(new Blob([text], { type: 'text/csv;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    if (typeof setTimeout === 'function') setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    else URL.revokeObjectURL(url);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+function exportHistory() {
+  if (historyExporting || historyStatus !== 'ready' || !historyData || historyData.total < 1) return;
+  historyExporting = true;
+  historyNotice = null;
+  renderHistoryView();
+  const epoch = sessionEpoch;
+  const finish = function (notice) {
+    historyExporting = false;
+    historyNotice = notice;
+    renderHistoryView();
+  };
+  google.script.run
+    .withSuccessHandler(function (result) {
+      if (epoch !== sessionEpoch || handleSessionRefusal(result)) return;
+      if (!isValidHistoryExport(result)) return finish({ kind: 'error', text: 'Couldn’t prepare the download. Try again in a moment.' });
+      finish(saveTextFile(result.filename, result.csv) ? null : { kind: 'error', text: 'Your browser blocked the download. Try again, or use another browser.' });
+    })
+    .withFailureHandler(function () {
+      if (epoch !== sessionEpoch) return;
+      finish({ kind: 'error', text: 'Couldn’t prepare the download. Check your connection and try again.' });
+    })
+    .exportCleaningHistory({ token: sessionToken(), range: historyRange });
 }
 
 // ---------- vacations (always the signed-in roommate's own; the server takes who that is from the session) ----------
@@ -1107,7 +1172,26 @@ swapDialog.addEventListener('cancel', function (event) {
 });
 
 panels.history.addEventListener('click', function (event) {
-  if (actionOf(event) === 'retry-history') loadHistory();
+  const action = actionOf(event);
+  if (action === 'retry-history') {
+    loadHistory();
+  } else if (action === 'history-range') {
+    const range = carrier(event, '[data-range]');
+    const picked = range ? range.getAttribute('data-range') : null;
+    if (picked && picked !== historyRange && HISTORY_RANGES.some(function (option) { return option.id === picked; })) {
+      historyRange = picked;
+      historyPage = 1;
+      loadHistory();
+    }
+  } else if (action === 'history-prev' && historyData && historyData.page > 1) {
+    historyPage = historyData.page - 1;
+    loadHistory();
+  } else if (action === 'history-next' && historyData && historyData.page < historyData.pages) {
+    historyPage = historyData.page + 1;
+    loadHistory();
+  } else if (action === 'download-history') {
+    exportHistory();
+  }
 });
 
 tabsElement.addEventListener('click', function (event) {

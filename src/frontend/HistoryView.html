@@ -1,54 +1,103 @@
 <script>
-// The History tab: the latest cleaning records as a read-only timeline. Data in, HTML strings out; no DOM access.
+// The History tab: cleaning records as a read-only table with a time range, pages and a CSV download.
+// Data in, HTML strings out; no DOM access.
 const HISTORY_OUTCOMES = {
   completed: { label: 'Cleaned', tone: 'ok' },
   vacation_skipped: { label: 'Skipped: away', tone: 'wait' },
   admin_resolved: { label: 'Closed by the app owner', tone: 'off' },
 };
+const HISTORY_RANGES = [
+  { id: '14d', label: 'Last 14 days', empty: 'No cleanings in the last 14 days' },
+  { id: '30d', label: 'Last 30 days', empty: 'No cleanings in the last 30 days' },
+  { id: '90d', label: 'Last 90 days', empty: 'No cleanings in the last 90 days' },
+  { id: 'all', label: 'All time', empty: 'No cleanings yet' },
+];
+const HISTORY_DEFAULT_RANGE = '14d';
 
-function historyDetail(entry) {
-  const detail = entry.outcome === 'completed' && entry.completed_at
-    ? 'Done ' + formatTimestamp(entry.completed_at)
-    : entry.outcome === 'vacation_skipped'
-      ? 'Away that weekend, no make-up turn'
-      : 'Closed ' + formatTimestamp(entry.resolved_at) + ' without a cleaning';
-  return detail + (entry.swapped ? ' · swapped turn' : '');
+function historyRangeOf(id) {
+  return HISTORY_RANGES.filter(function (range) {
+    return range.id === id;
+  })[0] || HISTORY_RANGES[0];
 }
 
-function renderHistoryEntry(entry) {
+function renderHistoryRow(entry) {
   const outcome = HISTORY_OUTCOMES[entry.outcome] || HISTORY_OUTCOMES.admin_resolved;
-  return '<li class="timeline-item">' + avatar(entry.roommate, 'md') +
-    '<div class="timeline-body"><div class="timeline-head"><p class="name">' + escapeHtml(displayName(entry.roommate)) + '</p>' +
-    '<span class="badge badge-account tone-' + outcome.tone + '">' + escapeHtml(outcome.label) + '</span></div>' +
-    '<p class="when">' + escapeHtml(formatWeekend(entry)) + '</p>' +
-    '<p class="history-detail">' + escapeHtml(historyDetail(entry)) + '</p></div></li>';
+  return '<tr><th scope="row" class="history-weekend" data-label="Weekend">' + escapeHtml(formatWeekend(entry)) + '</th>' +
+    '<td data-label="Roommate"><span class="history-person">' + avatar(entry.roommate, 'sm') + '<span class="name">' + escapeHtml(displayName(entry.roommate)) + '</span></span></td>' +
+    '<td data-label="Status"><span class="badge badge-account tone-' + outcome.tone + '">' + escapeHtml(outcome.label) + '</span>' +
+    (entry.swapped ? '<span class="history-sub">Swapped turn</span>' : '') + '</td>' +
+    '<td data-label="Resolved">' + escapeHtml(formatTimestamp(entry.resolved_at)) + '</td></tr>';
 }
 
-/** view: { status: 'loading' | 'ready' | 'error' | 'network', entries, limit } */
+function renderHistoryFilters(view) {
+  return '<div class="filter-bar" role="group" aria-label="Time range">' + HISTORY_RANGES.map(function (range) {
+    return '<button class="chip" type="button" data-action="history-range" data-range="' + range.id + '" aria-pressed="' + (range.id === view.range ? 'true' : 'false') + '">' +
+      escapeHtml(range.label) + '</button>';
+  }).join('') + '</div>';
+}
+
+function renderHistoryPager(view) {
+  if (view.pages < 2) return '';
+  const first = (view.page - 1) * view.pageSize + 1;
+  const last = first + view.entries.length - 1;
+  return '<div class="pager" role="group" aria-label="History pages">' +
+    '<button class="button button-quiet" type="button" data-action="history-prev"' + (view.page <= 1 ? ' disabled' : '') + '>Previous</button>' +
+    '<p class="pager-status">Page ' + escapeHtml(String(view.page)) + ' of ' + escapeHtml(String(view.pages)) + '<span class="history-sub">' +
+    escapeHtml(first + '–' + last + ' of ' + view.total) + '</span></p>' +
+    '<button class="button button-quiet" type="button" data-action="history-next"' + (view.page >= view.pages ? ' disabled' : '') + '>Next</button></div>';
+}
+
+function renderHistoryTable(view) {
+  return '<section class="card history-card" aria-labelledby="history-title"><h3 class="visually-hidden" id="history-title">' + escapeHtml(historyRangeOf(view.range).label) + '</h3>' +
+    '<div class="table-wrap"><table class="history-table"><thead><tr><th scope="col">Cleaning weekend</th><th scope="col">Roommate</th><th scope="col">Status</th><th scope="col">Resolved</th></tr></thead>' +
+    '<tbody>' + view.entries.map(renderHistoryRow).join('') + '</tbody></table></div></section>' + renderHistoryPager(view) +
+    '<p class="footnote">Newest first · Times in Berlin</p>';
+}
+
+/**
+ * view: { status: 'loading' | 'ready' | 'error' | 'network', range, page, pages, total, pageSize, entries,
+ *         exporting, notice: { kind, text } | null }
+ */
 function renderHistoryPanel(view) {
   let body;
   if (view.status === 'ready' && view.entries.length) {
-    body = '<section class="card upcoming" aria-labelledby="history-title"><h3 class="eyebrow section-title" id="history-title">Latest cleanings</h3>' +
-      '<ol class="timeline">' + view.entries.map(renderHistoryEntry).join('') + '</ol></section>' +
-      '<p class="footnote">The latest ' + escapeHtml(String(view.limit || view.entries.length)) + ', newest first · Times in Berlin</p>';
+    body = renderHistoryTable(view);
   } else if (view.status === 'ready') {
-    body = '<section class="card state state-compact"><span class="state-icon" aria-hidden="true">🕘</span><h3>No cleanings yet</h3>' +
-      '<p>Once a turn is marked as cleaned, it shows up here.</p></section>';
+    const range = historyRangeOf(view.range);
+    body = '<section class="card state state-compact"><h3>' + escapeHtml(range.empty) + '</h3><p>' +
+      (view.range === 'all' ? 'Once a turn is marked as cleaned, it shows up here.' : 'Choose a longer range to see older cleanings.') + '</p></section>';
   } else if (view.status === 'error' || view.status === 'network') {
-    body = '<section class="card state state-compact"><span class="state-icon" aria-hidden="true">🕘</span><h3>Couldn’t load the history</h3><p>' +
+    body = '<section class="card state state-compact"><h3>Couldn’t load the history</h3><p>' +
       (view.status === 'network' ? 'Check your connection and try again.' : 'Try again in a moment.') + '</p>' +
       '<button class="button" type="button" data-action="retry-history">Try again</button></section>';
   } else {
     body = '<div role="status"><p class="eyebrow">Loading history…</p><div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div></div>';
   }
+  const canDownload = view.status === 'ready' && view.total > 0 && !view.exporting;
   return '<div class="layout"><div class="vacation-top"><div><h2 class="panel-title">History</h2>' +
-    '<p class="vacation-intro">Who cleaned, and which turns were skipped.</p></div></div>' + body + '</div>';
+    '<p class="vacation-intro">Who cleaned, and which turns were skipped.</p></div>' +
+    '<button class="button button-quiet" type="button" data-action="download-history"' + (canDownload ? '' : ' disabled') + '>' +
+    (view.exporting ? 'Preparing…' : 'Download CSV') + '</button></div>' +
+    renderHistoryFilters(view) +
+    (view.notice ? '<p class="notice notice-' + escapeHtml(view.notice.kind) + '" role="alert">' + escapeHtml(view.notice.text) + '</p>' : '') +
+    body + '</div>';
 }
 
 function isValidHistory(result) {
-  return Boolean(result) && result.ok === true && Array.isArray(result.entries) && result.entries.every(function (entry) {
-    return Boolean(entry) && Boolean(entry.roommate) && typeof entry.roommate.roommate_id === 'string' &&
-      typeof entry.outcome === 'string' && !isNaN(Date.parse(entry.weekend_starts_at)) && !isNaN(Date.parse(entry.due_at));
-  });
+  const whole = function (value) {
+    return typeof value === 'number' && value >= 0 && value === Math.floor(value);
+  };
+  return Boolean(result) && result.ok === true && Array.isArray(result.entries) &&
+    HISTORY_RANGES.some(function (range) {
+      return range.id === result.range;
+    }) && whole(result.page) && whole(result.pages) && whole(result.total) && whole(result.page_size) && result.page >= 1 && result.pages >= 1 &&
+    result.entries.every(function (entry) {
+      return Boolean(entry) && Boolean(entry.roommate) && typeof entry.roommate.roommate_id === 'string' &&
+        typeof entry.outcome === 'string' && !isNaN(Date.parse(entry.weekend_starts_at)) && !isNaN(Date.parse(entry.due_at)) && !isNaN(Date.parse(entry.resolved_at));
+    });
+}
+
+function isValidHistoryExport(result) {
+  return Boolean(result) && result.ok === true && typeof result.csv === 'string' && typeof result.filename === 'string' && /^[A-Za-z0-9._-]{1,80}$/.test(result.filename);
 }
 </script>

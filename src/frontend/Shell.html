@@ -32,7 +32,7 @@ function renderProfileDialog(viewer) {
     '<div class="profile-card">' + avatar(viewer, 'md') + '<div><p class="name">' + escapeHtml(displayName(viewer)) + '</p>' +
     '<p class="profile-role"><span class="badge badge-role">' + escapeHtml(roleLabel(viewer)) + '</span> · Signed in</p></div></div>' +
     (viewer.role === 'ADMIN'
-      ? '<p class="profile-admin"><button class="button button-quiet profile-admin-button" type="button" data-action="open-admin"><span aria-hidden="true">🗂️</span> Manage household</button></p>'
+      ? '<p class="profile-admin"><button class="button button-quiet profile-admin-button" type="button" data-action="open-admin">Manage household</button></p>'
       : '') +
     '<p class="profile-note">Signing out ends your session on all your devices.</p>' +
     '<div class="dialog-actions">' +

@@ -33,10 +33,14 @@ function schedule(extra = {}) {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const at = (days) => new Date(Date.now() + days * DAY_MS).toISOString();
 const weekend = (days, status) => ({ weekend_starts_at: at(days), due_at: at(days + 2), status });
-/** The latest cleanings, newest first: a completion, a vacation skip and a turn closed by the owner. */
+/** The last 14 days of cleanings, newest first: a completion, a vacation skip and a turn closed by the owner. */
 const cleaningHistory = () => ({
   ok: true,
-  limit: 10,
+  range: '14d',
+  page: 1,
+  page_size: 25,
+  total: 3,
+  pages: 1,
   entries: [
     { log_id: 'l3', roommate: person('Jijo'), weekend_starts_at: day(-1), due_at: new Date(Date.UTC(2026, 0, 11, 23)).toISOString(), outcome: 'completed', completed_at: '2026-01-11T17:30:00.000Z', resolved_at: '2026-01-11T17:30:00.000Z', swapped: false },
     { log_id: 'l2', roommate: person('Arun'), weekend_starts_at: day(-2), due_at: new Date(Date.UTC(2026, 0, 4, 23)).toISOString(), outcome: 'vacation_skipped', completed_at: null, resolved_at: '2026-01-03T08:00:00.000Z', swapped: false },
@@ -133,7 +137,7 @@ async function installMock(page, config = {}) {
           }
           if (name === 'adminListAccounts') return window.__mock.accounts;
           if (name === 'listSwaps' && !Object.prototype.hasOwnProperty.call(window.__mock.responses, name)) return window.__mock.swaps;
-          if (name === 'listCleaningHistory' && !Object.prototype.hasOwnProperty.call(window.__mock.responses, name)) return window.__mock.history;
+          if (name === 'listCleaningHistory' && !Object.prototype.hasOwnProperty.call(window.__mock.responses, name)) return { ...window.__mock.history, range: (args[0] && args[0].range) || window.__mock.history.range }; // like the server, the answer names the range
           if (name === 'adminAddRoommate' || name === 'adminProvisionAccount' || name === 'adminResetSignIn') {
             const request = args[0] || {};
             const known = (window.__mock.accounts.accounts || []).find((a) => a.roommate_id === request.roommate_id);

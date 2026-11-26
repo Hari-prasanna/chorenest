@@ -44,7 +44,7 @@ function renderAuthStatus(state, busyText) {
 function renderSignIn(state) {
   const view = state || {};
   return '<section class="card auth-card" aria-labelledby="auth-title"' + (view.busy ? ' aria-busy="true"' : '') + '>' +
-    '<div class="auth-head"><span class="auth-icon" aria-hidden="true">🏡</span><h2 id="auth-title">Welcome home</h2>' +
+    '<div class="auth-head"><h2 id="auth-title">Welcome home</h2>' +
     '<p>Sign in to see whose turn it is.</p></div>' +
     '<form class="auth-form" data-form="sign-in" novalidate>' +
     '<div class="field"><label for="sign-in-username">Username</label>' +
@@ -60,7 +60,7 @@ function renderSignIn(state) {
 function renderPasswordChange(state) {
   const view = state || {};
   return '<section class="card auth-card" aria-labelledby="auth-title"' + (view.busy ? ' aria-busy="true"' : '') + '>' +
-    '<div class="auth-head"><span class="auth-icon" aria-hidden="true">🔑</span><h2 id="auth-title">Choose your own password</h2>' +
+    '<div class="auth-head"><h2 id="auth-title">Choose your own password</h2>' +
     '<p>' + (view.name ? 'Hi ' + escapeHtml(view.name) + '! ' : '') +
     'You signed in with a temporary password. Pick a new one that only you know.</p></div>' +
     '<form class="auth-form" data-form="change-password" novalidate>' +

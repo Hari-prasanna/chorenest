@@ -177,7 +177,7 @@ function loadFrontend({ storage = new Map(), systemDark = false, storageBlocked 
     },
   };
   for (const name of ['getRotationSchedule', 'markCleaned', 'listVacations', 'saveVacation', 'cancelVacation', 'updateVacation', 'endVacation', 'signIn', 'changePassword', 'signOut',
-    'listCleaningHistory', 'listSwaps', 'requestSwap', 'acceptSwap', 'declineSwap', 'cancelSwap', 'adminListAccounts', 'adminAddRoommate', 'adminProvisionAccount', 'adminResetSignIn', 'adminDisableSignIn', 'adminEndSessions', 'adminChangeRole']) {
+    'listCleaningHistory', 'exportCleaningHistory', 'listSwaps', 'requestSwap', 'acceptSwap', 'declineSwap', 'cancelSwap', 'adminListAccounts', 'adminAddRoommate', 'adminProvisionAccount', 'adminResetSignIn', 'adminDisableSignIn', 'adminEndSessions', 'adminChangeRole']) {
     run[name] = function (...args) {
       calls.push(name);
       callArguments.push(JSON.parse(JSON.stringify(args))); // plain data, as google.script.run would send it
@@ -215,11 +215,30 @@ function loadFrontend({ storage = new Map(), systemDark = false, storageBlocked 
     'vacation-return': returnInput,
     'away-slot': awaySlot,
   };
-  const document = { documentElement: root, getElementById: (id) => elements[id] || app };
+  // Downloads: a temporary link plus a Blob URL, as the page makes them.
+  const downloads = [];
+  const blobs = new Map();
+  const downloadFlags = { blocked: false };
+  const document = {
+    documentElement: root,
+    getElementById: (id) => elements[id] || app,
+    createElement: () => ({ click() { downloads.push({ href: this.href, download: this.download, text: blobs.get(this.href) }); } }),
+    body: { appendChild() {}, removeChild() {} },
+  };
   const context = vm.createContext({
     document,
     window: { localStorage, matchMedia: () => media },
     google: { script: { run } },
+    Blob: class { constructor(parts, options) { this.text = parts.join(''); this.type = options.type; } },
+    URL: {
+      createObjectURL: (blob) => {
+        if (downloadFlags.blocked) throw new Error('blocked');
+        const url = 'blob:test-' + (blobs.size + 1);
+        blobs.set(url, blob.text);
+        return url;
+      },
+      revokeObjectURL() {},
+    },
   });
   vm.runInContext(scriptOf('Storage.html'), context);
   vm.runInContext(scriptOf('Theme.html'), context);
@@ -282,6 +301,10 @@ function loadFrontend({ storage = new Map(), systemDark = false, storageBlocked 
     clickApp: (action) => app.listeners.click({ target: { getAttribute: (name) => (name === 'data-action' ? action : null) } }),
     clickMark: () => app.listeners.click({ target: { getAttribute: (name) => (name === 'data-action' ? 'mark-cleaned' : null) } }),
     dialogClick: (action) => dialog.listeners.click({ target: { getAttribute: (name) => (name === 'data-action' ? action : null) } }),
+    historyClick: (action, attributes = {}) =>
+      panels.history.listeners.click({ target: { getAttribute: (name) => (name === 'data-action' ? action : attributes[name] || null) } }),
+    downloads,
+    downloadFlags,
     calls,
     callArguments,
     storage,
@@ -810,7 +833,7 @@ test('the only buttons are the known ones, and the only navigation is the four-s
     for (const [button] of source.matchAll(/<button\b[^>]*>/g)) {
       assert.match(
         button,
-        /data-choice="|data-tab="(schedule|vacation|swaps|history)"|id="profile-button"|class="button auth-submit" type="submit"|data-action="(dismiss-beta|close-profile|sign-out|toggle-password|open-admin|admin-add|admin-retry|admin-back|admin-provision|admin-reset|admin-end-sessions|admin-disable|admin-role|admin-save-add|admin-save-provision|admin-confirm|admin-copy|admin-done|admin-close|retry|mark-cleaned|confirm-clean|cancel-clean|retry-vacations|plan-vacation|save-vacation|close-vacation|cancel-vacation|confirm-cancel-vacation|edit-vacation|end-vacation|save-edit|confirm-end-vacation|retry-history|swap-request|swap-retry|swap-accept|swap-decline|swap-cancel|swap-send|swap-confirm|swap-close)"/,
+        /data-choice="|data-tab="(schedule|vacation|swaps|history)"|id="profile-button"|class="button auth-submit" type="submit"|data-action="(dismiss-beta|close-profile|sign-out|toggle-password|open-admin|admin-add|admin-retry|admin-back|admin-provision|admin-reset|admin-end-sessions|admin-disable|admin-role|admin-save-add|admin-save-provision|admin-confirm|admin-copy|admin-done|admin-close|retry|mark-cleaned|confirm-clean|cancel-clean|retry-vacations|plan-vacation|save-vacation|close-vacation|cancel-vacation|confirm-cancel-vacation|edit-vacation|end-vacation|save-edit|confirm-end-vacation|retry-history|history-range|history-prev|history-next|download-history|swap-request|swap-retry|swap-accept|swap-decline|swap-cancel|swap-send|swap-confirm|swap-close)"/,
         `${file}: ${button}`
       );
     }
@@ -1117,7 +1140,7 @@ test('the page code holds no identity of its own: no picker, no roommate id in a
 
 // Slice 04D polish
 
-test('contextual emojis are decorative only, and later turns form a timeline', () => {
+test('the few remaining emojis are decorative and hidden from screen readers, and later turns form a timeline', () => {
   const page = loadFrontend();
   page.succeed(
     schedule({
@@ -1127,7 +1150,8 @@ test('contextual emojis are decorative only, and later turns form a timeline', (
     })
   );
   const html = page.app.innerHTML;
-  for (const emoji of ['🧹', '✨', '🏖️', '🔄']) assert.match(html, new RegExp(`aria-hidden="true">${emoji}</span>`), emoji);
+  for (const emoji of ['🏖️', '🔄']) assert.match(html, new RegExp(`aria-hidden="true">${emoji}</span>`), emoji); // the swap and away notes
+  assert.doesNotMatch(html, /[🧹✨]/u, 'no decorative emojis');
 
   const withoutDecoration = html.replace(/<span[^>]*aria-hidden="true"[^>]*>[^<]*<\/span>/g, '');
   assert.doesNotMatch(withoutDecoration, /\p{Extended_Pictographic}/u, 'every emoji is hidden from screen readers');
@@ -1139,8 +1163,7 @@ test('contextual emojis are decorative only, and later turns form a timeline', (
 
   const overdue = loadFrontend();
   overdue.succeed(schedule({ current: { status: 'overdue' } }));
-  assert.doesNotMatch(overdue.app.innerHTML, /aria-hidden="true">✨/);
-  assert.match(overdue.app.innerHTML, /aria-hidden="true">🧹/);
+  assert.doesNotMatch(overdue.app.innerHTML, /\p{Extended_Pictographic}/u);
 });
 
 test('hover effects are limited to hover-capable devices, and keyboard focus is always visible', () => {
@@ -1210,7 +1233,7 @@ test('confirming sends exactly the turn the page showed, ignores duplicate click
 
   page.succeed(schedule({ current: turn('Jijo', 1) }));
   const html = page.app.innerHTML;
-  assert.match(html, /<p class="notice notice-success" role="status"><span aria-hidden="true">✨<\/span> Nice work, Hari! Entire Home is marked as cleaned\.<\/p>/);
+  assert.match(html, /<p class="notice notice-success" role="status">Nice work, Hari! Entire Home is marked as cleaned\.<\/p>/);
   assert.match(textOf(html), /Current turn Pending Jijo/);
   assert.equal(hasMarkButton(html), false, 'Hari is no longer on duty');
 
@@ -2196,70 +2219,162 @@ test('signing out from the admin section clears it for the next person', () => {
   assert.equal(page.adminDialog.innerHTML, '');
 });
 
-// History: the latest cleanings, read-only, loaded on the first visit to the tab
+// History: a read-only table with a time range, server-side pages and a CSV download, loaded on the first visit
 
 const historyEntry = (name, n, extra = {}) => ({
   log_id: `log-${n}`, roommate: person(name), weekend_starts_at: turn(name, -n).weekend_starts_at, due_at: turn(name, -n).due_at,
   outcome: 'completed', completed_at: '2026-01-11T17:30:00.000Z', resolved_at: '2026-01-11T17:30:00.000Z', swapped: false, ...extra,
 });
-const historyList = (...entries) => ({ ok: true, entries, limit: 10 });
+const historyList = (entries, extra = {}) => ({ ok: true, entries, range: '14d', page: 1, page_size: 25, total: entries.length, pages: 1, ...extra });
 const historyText = (page) => textOf(page.panels.history.innerHTML);
+const historyArgs = (page) => page.callArguments[page.calls.lastIndexOf('listCleaningHistory')][0];
+const openHistory = (page = withHari()) => {
+  page.tabClick('history');
+  return page;
+};
 
-test('History loads with the session on its first visit and shows each cleaning as a read-only timeline', () => {
+test('History loads the last 14 days on its first visit and shows a read-only table', () => {
   const page = withHari();
   page.succeed(vacationList());
   assert.equal(page.calls.includes('listCleaningHistory'), false, 'not loaded until asked for');
-  page.tabClick('history');
+  openHistory(page);
   assert.equal(page.calls[page.calls.length - 1], 'listCleaningHistory');
-  assert.deepEqual(page.callArguments[page.calls.length - 1], [{ token: 'token-Hari' }]);
+  assert.deepEqual(historyArgs(page), { token: 'token-Hari', range: '14d', page: 1 });
   assert.match(historyText(page), /Loading history…/);
-  page.succeed(historyList(
+  assert.match(page.panels.history.innerHTML, /aria-pressed="true">Last 14 days/, 'the filter shows while loading');
+  page.succeed(historyList([
     historyEntry('Jijo', 1),
-    historyEntry('Arun', 2, { outcome: 'vacation_skipped', completed_at: null }),
+    historyEntry('Arun', 2, { outcome: 'vacation_skipped', completed_at: null, resolved_at: '2026-01-03T08:00:00.000Z' }),
     historyEntry('Hari', 3, { outcome: 'admin_resolved', completed_at: null, resolved_at: '2026-01-05T09:00:00.000Z', swapped: true }),
-  ));
+  ]));
+  const html = page.panels.history.innerHTML;
   const text = historyText(page);
-  assert.match(text, /^History Who cleaned, and which turns were skipped. Latest cleanings/);
-  assert.match(text, /Jijo Cleaned Sat 10 – Sun 11 Jan Done Sun 11 Jan, 18:30/);
-  assert.match(text, /Arun Skipped: away Sat 3 – Sun 4 Jan Away that weekend, no make-up turn/);
-  assert.match(text, /Hari Closed by the app owner Sat 27 – Sun 28 Dec Closed Mon 5 Jan, 10:00 without a cleaning · swapped turn/);
-  assert.match(text, /The latest 10, newest first · Times in Berlin$/);
-  assert.doesNotMatch(page.panels.history.innerHTML, /<(button|input|form|select)\b/, 'read-only');
+  assert.match(text, /^History Who cleaned, and which turns were skipped\. Download CSV Last 14 days Last 30 days Last 90 days All time Last 14 days Cleaning weekend Roommate Status Resolved/);
+  assert.match(text, /Sat 10 – Sun 11 Jan Jijo Cleaned Sun 11 Jan, 18:30/);
+  assert.match(text, /Sat 3 – Sun 4 Jan Arun Skipped: away Sat 3 Jan, 09:00/);
+  assert.match(text, /Sat 27 – Sun 28 Dec Hari Closed by the app owner Swapped turn Mon 5 Jan, 10:00/);
+  assert.match(text, /Newest first · Times in Berlin$/);
+  assert.doesNotMatch(text, /Page \d/, 'one page needs no pager');
+  assert.equal((html.match(/<tr>/g) || []).length, 4, 'a header row and three records');
+  assert.equal((html.match(/<th scope="row"/g) || []).length, 3);
+  assert.doesNotMatch(html, /<(input|form|select|a)\b/);
+  assert.doesNotMatch(html, /\p{Extended_Pictographic}/u, 'no decorative emojis');
 
   const calls = page.calls.length;
   page.tabClick('schedule');
-  page.tabClick('history');
+  openHistory(page);
   assert.equal(page.calls.length, calls, 'a recent history is kept');
 });
 
-test('History has clear empty and error states, retries, escapes names, and refreshes after a cleaning', () => {
-  const empty = withHari();
-  empty.tabClick('history');
-  empty.succeed(historyList());
-  assert.match(historyText(empty), /No cleanings yet Once a turn is marked as cleaned, it shows up here./);
+test('choosing a range asks the server for page 1 of that range, and the chosen range is shown as pressed', () => {
+  const page = openHistory();
+  page.succeed(historyList([historyEntry('Jijo', 1)]));
+  page.historyClick('history-range', { 'data-range': '90d' });
+  assert.deepEqual(historyArgs(page), { token: 'token-Hari', range: '90d', page: 1 });
+  assert.match(page.panels.history.innerHTML, /aria-pressed="true">Last 90 days/);
+  assert.equal((page.panels.history.innerHTML.match(/aria-pressed="true"/g) || []).length, 1);
+  page.succeed(historyList([historyEntry('Jijo', 1)], { range: '90d' }));
 
-  const broken = withHari();
-  broken.tabClick('history');
+  const before = page.calls.length;
+  page.historyClick('history-range', { 'data-range': '90d' }); // already chosen
+  page.historyClick('history-range', { 'data-range': '7d' }); // not a range
+  page.historyClick('history-range', {});
+  assert.equal(page.calls.length, before, 'nothing asked');
+  page.historyClick('history-range', { 'data-range': 'all' });
+  assert.equal(historyArgs(page).range, 'all');
+  page.succeed(historyList([historyEntry('Jijo', 1)], { range: 'all' }));
+  page.tabClick('schedule');
+  assert.match(page.panels.history.innerHTML, /aria-pressed="true">All time/, 'the range is kept while the tab is closed');
+});
+
+test('pages come from the server: next and previous ask for the neighbouring page, and the edges do nothing', () => {
+  const page = openHistory();
+  const entries = Array.from({ length: 25 }, (_, n) => historyEntry('Jijo', n));
+  page.succeed(historyList(entries, { range: 'all', total: 61, pages: 3 }));
+  assert.match(historyText(page), /Page 1 of 3 1–25 of 61/);
+  assert.match(page.panels.history.innerHTML, /data-action="history-prev" disabled/);
+  assert.doesNotMatch(page.panels.history.innerHTML, /data-action="history-next" disabled/);
+
+  const before = page.calls.length;
+  page.historyClick('history-prev');
+  assert.equal(page.calls.length, before, 'no page before the first');
+  page.historyClick('history-next');
+  assert.deepEqual(historyArgs(page), { token: 'token-Hari', range: 'all', page: 2 });
+  page.succeed(historyList(entries, { range: 'all', total: 61, pages: 3, page: 2 }));
+  assert.match(historyText(page), /Page 2 of 3 26–50 of 61/);
+  page.historyClick('history-next');
+  page.succeed(historyList(entries.slice(0, 11), { range: 'all', total: 61, pages: 3, page: 3 }));
+  assert.match(historyText(page), /Page 3 of 3 51–61 of 61/);
+  assert.match(page.panels.history.innerHTML, /data-action="history-next" disabled/);
+  const last = page.calls.length;
+  page.historyClick('history-next');
+  assert.equal(page.calls.length, last, 'no page after the last');
+  page.historyClick('history-prev');
+  assert.equal(historyArgs(page).page, 2);
+
+  // Changing the range starts again at page 1.
+  page.succeed(historyList(entries, { range: 'all', total: 61, pages: 3, page: 2 }));
+  page.historyClick('history-range', { 'data-range': '30d' });
+  assert.deepEqual(historyArgs(page), { token: 'token-Hari', range: '30d', page: 1 });
+});
+
+test('an older answer never replaces a newer one, and the page follows the server when it moved to the last page', () => {
+  const page = openHistory();
+  page.succeed(historyList([historyEntry('Jijo', 1)]));
+  page.historyClick('history-range', { 'data-range': '30d' }); // call A
+  const a = page.calls.length - 1;
+  page.historyClick('history-range', { 'data-range': '90d' }); // call B
+  const b = page.calls.length - 1;
+  page.succeedCall(b, historyList([historyEntry('Arun', 5)], { range: '90d' }));
+  page.succeedCall(a, historyList([historyEntry('Kim', 6)], { range: '30d' }));
+  assert.match(historyText(page), /Arun/);
+  assert.doesNotMatch(historyText(page), /Kim/);
+  assert.match(page.panels.history.innerHTML, /aria-pressed="true">Last 90 days/);
+
+  const moved = openHistory(withHari());
+  moved.succeed(historyList(Array.from({ length: 25 }, (_, n) => historyEntry('Jijo', n)), { range: 'all', total: 60, pages: 3 }));
+  moved.historyClick('history-next');
+  moved.succeed(historyList([historyEntry('Jijo', 1)], { range: 'all', total: 26, pages: 2, page: 2 })); // the list shrank meanwhile
+  assert.match(historyText(moved), /Page 2 of 2 26–26 of 26/);
+});
+
+test('History has clear empty states for every range, an error state with retry, escapes names, and refreshes after a cleaning', () => {
+  const empty = openHistory();
+  empty.succeed(historyList([], { total: 0 }));
+  assert.match(historyText(empty), /No cleanings in the last 14 days Choose a longer range to see older cleanings\./);
+  assert.match(empty.panels.history.innerHTML, /data-action="download-history" disabled/, 'nothing to download');
+  empty.historyClick('history-range', { 'data-range': '30d' });
+  empty.succeed(historyList([], { range: '30d', total: 0 }));
+  assert.match(historyText(empty), /No cleanings in the last 30 days/);
+  empty.historyClick('history-range', { 'data-range': '90d' });
+  empty.succeed(historyList([], { range: '90d', total: 0 }));
+  assert.match(historyText(empty), /No cleanings in the last 90 days/);
+  empty.historyClick('history-range', { 'data-range': 'all' });
+  empty.succeed(historyList([], { range: 'all', total: 0 }));
+  assert.match(historyText(empty), /No cleanings yet Once a turn is marked as cleaned, it shows up here\./);
+
+  const broken = openHistory();
   broken.fail();
-  assert.match(historyText(broken), /Couldn’t load the history Check your connection and try again. Try again/);
-  broken.panels.history.listeners.click({ target: { getAttribute: (name) => (name === 'data-action' ? 'retry-history' : null) } });
+  assert.match(historyText(broken), /Couldn’t load the history Check your connection and try again\. Try again/);
+  assert.match(broken.panels.history.innerHTML, /data-action="history-range"/, 'the range can still be changed');
+  broken.historyClick('retry-history');
   assert.equal(broken.calls[broken.calls.length - 1], 'listCleaningHistory');
   broken.succeed({ ok: true, entries: [{ nonsense: true }] });
-  assert.match(historyText(broken), /Couldn’t load the history Try again in a moment./);
+  assert.match(historyText(broken), /Couldn’t load the history Try again in a moment\./);
+  broken.historyClick('retry-history');
+  broken.succeed(historyList([historyEntry('Jijo', 1)], { range: 'bogus' }));
+  assert.match(historyText(broken), /Couldn’t load the history/, 'an unknown range in the answer is not trusted');
 
-  const hostile = withHari();
-  hostile.tabClick('history');
-  hostile.succeed(historyList(historyEntry('<img src=x onerror=alert(1)>', 1)));
+  const hostile = openHistory();
+  hostile.succeed(historyList([historyEntry('<img src=x onerror=alert(1)>', 1)]));
   assert.doesNotMatch(hostile.panels.history.innerHTML, /<img/);
 
-  const ended = withHari();
-  ended.tabClick('history');
+  const ended = openHistory();
   ended.succeed(failure('UNAUTHENTICATED'));
   assert.equal(ended.signedIn(), false, 'an ended session goes back to sign-in');
 
-  const after = withHari();
-  after.tabClick('history');
-  after.succeed(historyList(historyEntry('Jijo', 1)));
+  const after = openHistory();
+  after.succeed(historyList([historyEntry('Jijo', 1)]));
   after.tabClick('schedule');
   after.clickMark();
   after.dialogClick('confirm-clean');
@@ -2267,6 +2382,46 @@ test('History has clear empty and error states, retries, escapes names, and refr
   const before = after.calls.length;
   after.tabClick('history');
   assert.equal(after.calls[before], 'listCleaningHistory', 'the new record is fetched on the next visit');
+  assert.deepEqual(historyArgs(after), { token: 'token-Hari', range: '14d', page: 1 });
+});
+
+test('Download CSV asks the server for the chosen range, saves the file once, and explains a failure', () => {
+  const page = openHistory();
+  page.succeed(historyList([historyEntry('Jijo', 1)], { range: '30d' }));
+  page.historyClick('download-history');
+  assert.equal(page.calls[page.calls.length - 1], 'exportCleaningHistory');
+  assert.deepEqual(page.callArguments[page.calls.length - 1], [{ token: 'token-Hari', range: '30d' }], 'only the token and the range');
+  assert.match(historyText(page), /Preparing…/);
+  assert.match(page.panels.history.innerHTML, /data-action="download-history" disabled/);
+  const before = page.calls.length;
+  page.historyClick('download-history'); // a second click while preparing
+  assert.equal(page.calls.length, before);
+  page.succeed({ ok: true, filename: 'chorenest-history-30d-2026-01-13.csv', csv: 'a,b\r\n1,2\r\n', count: 1 });
+  assert.deepEqual(page.downloads, [{ href: 'blob:test-1', download: 'chorenest-history-30d-2026-01-13.csv', text: 'a,b\r\n1,2\r\n' }]);
+  assert.match(historyText(page), /Download CSV/);
+  assert.doesNotMatch(page.panels.history.innerHTML, /role="alert"/);
+
+  for (const answer of [{ ok: true, filename: '../evil.csv', csv: 'x' }, { ok: true, csv: 5 }, failure('INTERNAL_ERROR')]) {
+    page.historyClick('download-history');
+    page.succeed(answer);
+    assert.match(page.panels.history.innerHTML, /Couldn’t prepare the download/);
+  }
+  assert.equal(page.downloads.length, 1, 'nothing was saved for a bad answer');
+
+  page.historyClick('download-history');
+  page.fail();
+  assert.match(historyText(page), /Couldn’t prepare the download\. Check your connection/);
+  page.downloadFlags.blocked = true;
+  page.historyClick('download-history');
+  page.succeed({ ok: true, filename: 'x.csv', csv: 'a' });
+  assert.match(historyText(page), /Your browser blocked the download/);
+
+  const ended = openHistory();
+  ended.succeed(historyList([historyEntry('Jijo', 1)]));
+  ended.historyClick('download-history');
+  ended.succeed(failure('UNAUTHENTICATED'));
+  assert.equal(ended.signedIn(), false);
+  assert.equal(ended.downloads.length, 0);
 });
 
 // Swaps: incoming, outgoing and accepted requests, and the request form
