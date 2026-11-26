@@ -31,8 +31,9 @@ function saveVacation(request) {
 }
 
 /**
- * Browser API: cancels a vacation that has not started and has not skipped a turn yet. Nothing is deleted: the row
- * gets a cancelled_at time and the rotation engine ignores it. Request: { token, vacation_id }.
+ * Browser API: deletes your own vacation (upcoming, under way or recently back) when that is safe: no turn was skipped
+ * for it, and the current turn stays exactly as it is. Nothing is erased: the row gets a cancelled_at time and the
+ * rotation engine ignores it, so recorded skips and the cleaning history never change. Request: { token, vacation_id }.
  */
 function cancelVacation(request) {
   let locked = false;
@@ -76,6 +77,13 @@ function listVacations(request) {
     const skippedLogs = records.CLEANING_LOGS.filter(function (log) {
       return log.outcome === 'vacation_skipped';
     });
+    let baseline = null; // the current turn as it is, worked out once and only if a started vacation needs it
+    const deletable = function (row) {
+      if (!row.vacation_id || vacationSkippedATurn_(String(row.vacation_id), skippedLogs)) return false;
+      if (row.start_date.getTime() > now.getTime()) return true;
+      baseline = baseline || currentTurnKey_(records, null, null, now);
+      return keepsCurrentTurn_(records, row, now, baseline);
+    };
 
     const vacations = records.VACATIONS
       .filter(function (row) {
@@ -87,7 +95,7 @@ function listVacations(request) {
       })
       .slice(0, VACATION_LIST_LIMIT)
       .map(function (row) {
-        return vacationToJson_(row, names[row.roommate_id], now, turns, skippedLogs);
+        return vacationToJson_(row, names[row.roommate_id], now, turns, skippedLogs, deletable);
       });
     return { ok: true, vacations: vacations };
   } catch (error) {
@@ -322,15 +330,25 @@ function addVacationUnderLock_(claim) {
   }
 }
 
+/**
+ * Runs under the lock with the Sheet as it is now. A vacation that skipped a turn stays (its log names it). One that
+ * has started also stays when removing it would change the current turn (who cleans, its dates or a skip due for it),
+ * as with editing; a not-yet-started one may still hand the open turn back, as cancelling always did. Past turns are
+ * already logged and later turns are only a forecast, so the cleaning history never changes.
+ */
 function cancelUnderLock_(claim) {
-  const records = SheetDb.listMany(['VACATIONS', 'CLEANING_LOGS']);
+  const records = SheetDb.listMany(ROTATION_SHEETS);
   const vacation = records.VACATIONS.find(function (row) {
     return row.vacation_id === claim.vacationId && !isCancelled_(row);
   });
   if (!vacation) throw appError_('VACATION_NOT_FOUND', 'No such vacation.');
   if (vacation.roommate_id !== claim.roommateId) throw appError_('NOT_YOUR_VACATION', 'Someone else’s vacation.');
-  if (!isValidVacation_(vacation) || vacation.start_date.getTime() <= Date.now()) throw appError_('VACATION_STARTED', 'Already started.');
+  if (!isValidVacation_(vacation)) throw appError_('VACATION_NOT_FOUND', 'Not a usable vacation row.');
   if (vacationSkippedATurn_(vacation.vacation_id, records.CLEANING_LOGS)) throw appError_('VACATION_IN_USE', 'Already skipped a turn.');
+  const now = new Date();
+  if (vacation.start_date.getTime() <= now.getTime() && !keepsCurrentTurn_(records, vacation, now, currentTurnKey_(records, null, null, now))) {
+    throw appError_('VACATION_DELETE_CONFLICT', 'Removing it would change the current turn.');
+  }
 
   try {
     SheetDb.update('VACATIONS', claim.vacationId, { cancelled_at: new Date() });
@@ -338,6 +356,11 @@ function cancelUnderLock_(claim) {
     console.error(error);
     throw appError_('WRITE_FAILED', 'Could not save.');
   }
+}
+
+/** Whether the current turn is the same with `vacation` removed; `baseline` is currentTurnKey_ with nothing replaced. */
+function keepsCurrentTurn_(records, vacation, now, baseline) {
+  return currentTurnKey_(records, vacation, Object.assign({}, vacation, { cancelled_at: now }), now) === baseline;
 }
 
 function vacationSkippedATurn_(vacationId, logs) {
@@ -357,7 +380,7 @@ function weekendsOfVacation_(startMs, endMs, nowMs) {
   return weekends;
 }
 
-function vacationToJson_(row, name, now, turns, skippedLogs) {
+function vacationToJson_(row, name, now, turns, skippedLogs, deletable) {
   const start = row.start_date.getTime();
   const end = row.return_date.getTime();
   const returned = end <= now.getTime();
@@ -388,7 +411,7 @@ function vacationToJson_(row, name, now, turns, skippedLogs) {
     start_date: row.start_date.toISOString(),
     return_date: row.return_date.toISOString(),
     state: returned ? 'returned' : start <= now.getTime() ? 'away' : 'upcoming',
-    cancellable: id !== null && start > now.getTime() && !vacationSkippedATurn_(id, skippedLogs),
+    cancellable: deletable(row), // whether its owner may delete it (cancelVacation)
     weekends: weekends,
   };
 }

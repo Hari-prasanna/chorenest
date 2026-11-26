@@ -87,7 +87,7 @@ function renderAdminPanel(view) {
   if (view.status === 'ready') {
     body = '<ul class="account-list">' + view.accounts.map(renderAccountCard).join('') + '</ul>';
   } else if (view.status === 'error' || view.status === 'network') {
-    body = '<section class="card state state-compact"><span class="state-icon" aria-hidden="true">🗂️</span><h3>Couldn’t load the household</h3>' +
+    body = '<section class="card state state-compact"><h3>Couldn’t load the household</h3>' +
       '<p>' + (view.status === 'network' ? 'Check your connection and try again.' : 'Try again in a moment.') + '</p>' +
       '<button class="button" type="button" data-action="admin-retry">Try again</button></section>';
   } else {
@@ -95,9 +95,9 @@ function renderAdminPanel(view) {
   }
   return '<div class="layout"><div class="vacation-top"><div><h2 class="panel-title">Household</h2>' +
     '<p class="vacation-intro">Roommates and their sign-in. Only admins see this page.</p></div>' +
-    '<button class="button" type="button" data-action="admin-add">Add roommate</button></div>' +
+    '<button class="button" type="button" data-action="admin-add">' + icon('personAdd') + '<span>Add roommate</span></button></div>' +
     (view.notice ? renderNotice(view.notice) : '') + body +
-    '<p class="footnote"><button class="link-button" type="button" data-action="admin-back">Back to the schedule</button></p></div>';
+    '<p class="footnote"><button class="link-button" type="button" data-action="admin-back">' + icon('left') + '<span>Back to the schedule</span></button></p></div>';
 }
 
 function textField(id, label, value, attributes, type) {
@@ -165,7 +165,7 @@ function renderAdminBusy(text) {
  * removes it, and it never appears again.
  */
 function renderTemporaryPassword(account, password, expiresAt) {
-  return '<div class="dialog-body"><p class="dialog-emoji" aria-hidden="true">🔑</p>' +
+  return '<div class="dialog-body">' +
     '<h2 id="admin-title">Temporary password for ' + escapeHtml(account.name) + '</h2>' +
     '<p>Username <strong>' + escapeHtml(account.username || '') + '</strong>. Give them this password in person. It is shown only now.</p>' +
     '<p class="temp-password" id="temp-password" translate="no">' + escapeHtml(password) + '</p>' +

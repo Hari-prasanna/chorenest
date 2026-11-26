@@ -35,13 +35,13 @@ test.describe('tab navigation', () => {
       await expectHealthyLayout(page, `tab ${name}`);
     }
     expect(await callNames(page), 'switching only loads Swaps and History, once each').toEqual([...LOADED, 'listSwaps', 'listCleaningHistory']);
-    await shot(page, testInfo, 'schedule-light');
+    await shot(page, testInfo, 'schedule-default');
     expect(problems).toEqual([]);
   });
 
   // Regression: DEV v19 read event.target, so a tap on a tab's icon or label (or on the broom inside "Mark as cleaned")
   // did nothing, and coming back to Schedule replayed the entrance animation.
-  test('a real tap on a tab\'s icon or label switches, and the broom inside Mark as cleaned opens the dialog', async ({ page }) => {
+  test('a real tap on a tab\'s icon or label switches, and Mark as cleaned opens the dialog', async ({ page }) => {
     const { problems } = await openApp(page, { as: HARI });
     await expect(page.locator('.hero')).toBeVisible();
     await page.waitForTimeout(700); // the first entrance animation finishes
@@ -59,7 +59,7 @@ test.describe('tab navigation', () => {
     const animating = await page.evaluate(() => document.getAnimations().map((a) => a.animationName || a.transitionProperty));
     expect(animating, 'returning to Schedule replays no entrance animation').toEqual([]);
 
-    await page.locator('.mark-button span[aria-hidden="true"]').click();
+    await page.locator('.mark-button').click();
     await expect(page.locator('#confirm-dialog')).toBeVisible();
     expect(await calls(page, 'getRotationSchedule'), 'tapping tabs sends nothing').toHaveLength(1);
     expect(problems).toEqual([]);
@@ -107,10 +107,10 @@ test.describe('household vacations', () => {
     await expect(card(page, 'Arun').locator('.chip')).toBeHidden();
     await expect(card(page, 'Jijo').locator('summary')).toHaveText('Cleaning impact');
 
-    // Only Hari's own upcoming vacation has actions: Cancel and Edit dates.
+    // Only Hari's own upcoming vacation has actions: Edit dates and Delete.
     await expect(card(page, 'Arun').locator('button')).toHaveCount(0);
     await expect(card(page, 'Jijo').locator('button')).toHaveCount(0);
-    await expect(card(page, 'Hari').getByRole('button', { name: 'Cancel vacation' })).toBeEnabled();
+    await expect(card(page, 'Hari').getByRole('button', { name: 'Delete vacation' })).toBeEnabled();
     await expect(card(page, 'Hari').getByRole('button', { name: 'Edit dates' })).toBeEnabled();
     await expect(overview.getByRole('button', { name: /Plan vacation/ })).toBeVisible();
 
@@ -254,7 +254,7 @@ test.describe('changing a vacation', () => {
     const { problems } = await openApp(page, { as: ARUN });
     await tab(page, 'vacation').click();
     const arun = card(page, 'Arun');
-    await expect(arun.getByRole('button', { name: 'Cancel vacation' })).toHaveCount(0);
+    await expect(arun.getByRole('button', { name: 'Delete vacation' }), 'it already skipped a turn').toHaveCount(0);
     await arun.getByRole('button', { name: 'Edit dates' }).click();
     await expect(page.locator('#vacation-start')).toBeDisabled();
     await expect(page.locator('#vacation-dialog')).toContainText('Your vacation has started, so the first day away stays.');
@@ -272,6 +272,36 @@ test.describe('changing a vacation', () => {
     const arunRow = await listed(page, 'v-arun');
     expect((await calls(page, 'endVacation')).map((call) => call.args)).toEqual([[{ token: 'token-Arun', vacation_id: 'v-arun', seen_start: arunRow.start_date, seen_return: arunRow.return_date }]]);
     await expect.poll(() => callNames(page)).toEqual([...LOADED, 'endVacation', 'getRotationSchedule', 'listVacations']);
+    expect(problems).toEqual([]);
+  });
+
+  test('Delete asks first with Keep it focused, sends only the vacation, and a refusal is explained', async ({ page }, testInfo) => {
+    const { problems } = await openApp(page, { as: HARI });
+    await tab(page, 'vacation').click();
+    await card(page, 'Hari').getByRole('button', { name: 'Delete vacation' }).click();
+    const dialog = page.locator('#vacation-dialog');
+    await expect(dialog.getByRole('heading', { name: 'Delete this vacation?' })).toBeVisible();
+    await expect(dialog).toContainText('Your turns in that time count again.');
+    await expect(dialog.getByRole('button', { name: 'Keep it' })).toBeFocused();
+    await shot(page, testInfo, 'vacation-delete');
+    await dialog.getByRole('button', { name: 'Keep it' }).click();
+    await expect(dialog).toBeHidden();
+    expect(await callNames(page), 'keeping it sends nothing').toEqual(LOADED);
+
+    await card(page, 'Hari').getByRole('button', { name: 'Delete vacation' }).click();
+    await dialog.getByRole('button', { name: 'Delete vacation' }).click();
+    await expect(dialog).toBeHidden();
+    await expect(panel(page, 'vacation').locator('.notice-success')).toContainText('Vacation deleted.');
+    expect((await calls(page, 'cancelVacation')).map((call) => call.args)).toEqual([[{ token: 'token-Hari', vacation_id: 'v1' }]]);
+
+    await page.evaluate(() => {
+      window.__mock.responses.cancelVacation = { ok: false, error: { code: 'VACATION_IN_USE', message: 'Secret detail' } };
+    });
+    await card(page, 'Hari').getByRole('button', { name: 'Delete vacation' }).click();
+    await dialog.getByRole('button', { name: 'Delete vacation' }).click();
+    await expect(panel(page, 'vacation').locator('.notice-error')).toHaveText('This vacation already skipped a turn, so it stays on record and can’t be deleted.');
+    await expect(page.locator('body')).not.toContainText('Secret detail');
+    await expectHealthyLayout(page, 'after a refused delete');
     expect(problems).toEqual([]);
   });
 
@@ -401,12 +431,20 @@ test.describe('profile and Beta notice', () => {
 });
 
 test.describe('themes', () => {
-  test('Light, Dark and System apply, persist, and keep the layout healthy', async ({ page }, testInfo) => {
-    const { problems } = await openApp(page);
+  test('a first visit is Dark; Light, Dark and System apply, persist, and keep the layout healthy', async ({ page }, testInfo) => {
     await page.emulateMedia({ colorScheme: 'light' });
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+    const { problems } = await openApp(page);
+    await expect(page.locator('html'), 'Dark even on a light system').toHaveAttribute('data-theme', 'dark');
+    await expect(page.getByRole('button', { name: 'Dark' })).toHaveAttribute('aria-pressed', 'true');
     const background = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+
+    await page.getByRole('button', { name: 'Light' }).click();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
     const lightBackground = await background();
+    await expectHealthyLayout(page, 'light');
+    await shot(page, testInfo, 'schedule-light');
+    await page.reload();
+    await expect(page.locator('html'), 'a saved Light wins over the default').toHaveAttribute('data-theme', 'light');
 
     await page.getByRole('button', { name: 'Dark' }).click();
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
@@ -558,12 +596,13 @@ test.describe('sign in and sessions', () => {
     await expect(page.getByLabel('Username')).toBeFocused();
     await expect(page.locator('#tabs')).toBeHidden();
     await expect(page.locator('#profile-button')).toBeHidden();
-    await expectHealthyAuthLayout(page, 'sign-in');
-    await shot(page, testInfo, 'sign-in-light');
-    await page.locator('#theme-toggle button[data-choice="dark"]').click();
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
     await expectHealthyAuthLayout(page, 'sign-in dark');
     await shot(page, testInfo, 'sign-in-dark');
+    await page.locator('#theme-toggle button[data-choice="light"]').click();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+    await expectHealthyAuthLayout(page, 'sign-in light');
+    await shot(page, testInfo, 'sign-in-light');
     expect(await calls(page)).toEqual([]);
     expect(problems).toEqual([]);
   });
@@ -796,21 +835,56 @@ test.describe('admin section', () => {
 });
 
 test.describe('history', () => {
-  test('the History tab shows the latest cleanings, newest first, read-only', async ({ page }, testInfo) => {
+  test('the History tab shows the last 14 days as a table, newest first, with range filters', async ({ page }, testInfo) => {
     const { problems } = await openApp(page);
     await expect(page.locator('.hero')).toBeVisible();
     await tab(page, 'history').click();
-    const items = panel(page, 'history').locator('.timeline-item');
-    await expect(items).toHaveCount(3);
-    await expect(items.nth(0)).toContainText('Jijo');
-    await expect(items.nth(0)).toContainText('Cleaned');
-    await expect(items.nth(1)).toContainText('Skipped: away');
-    await expect(items.nth(2)).toContainText('Closed by the app owner');
-    await expect(panel(page, 'history').locator('button, input, form, select')).toHaveCount(0);
-    expect((await calls(page, 'listCleaningHistory'))[0].args[0]).toEqual({ token: 'token-Jijo' });
+    const rows = panel(page, 'history').locator('tbody tr');
+    await expect(rows).toHaveCount(3);
+    await expect(rows.nth(0)).toContainText('Jijo');
+    await expect(rows.nth(0)).toContainText('Cleaned');
+    await expect(rows.nth(1)).toContainText('Skipped: away');
+    await expect(rows.nth(2)).toContainText('Closed by the app owner');
+    const chips = panel(page, 'history').locator('.filter-bar .chip');
+    await expect(chips).toHaveText(['Last 14 days', 'Last 30 days', 'Last 90 days', 'All time']);
+    await expect(chips.nth(0)).toHaveAttribute('aria-pressed', 'true');
+    await expect(panel(page, 'history').locator('input, form, select')).toHaveCount(0);
+    expect((await calls(page, 'listCleaningHistory'))[0].args[0]).toEqual({ token: 'token-Jijo', range: '14d', page: 1 });
     await expectHealthyLayout(page, 'history');
     await shot(page, testInfo, 'history');
+
+    await chips.nth(2).click();
+    await expect(chips.nth(2)).toHaveAttribute('aria-pressed', 'true');
+    await expect(chips.nth(0)).toHaveAttribute('aria-pressed', 'false');
+    const all = await calls(page, 'listCleaningHistory');
+    expect(all[all.length - 1].args[0]).toEqual({ token: 'token-Jijo', range: '90d', page: 1 });
+    await expect(rows).toHaveCount(3);
+    await expectHealthyLayout(page, 'history');
     expect(problems).toEqual([]);
+  });
+
+  test('Download CSV saves the file for the chosen range', async ({ page }) => {
+    const csv = '﻿Weekend start,Weekend end,Roommate,Status,Resolved (Berlin time),Swapped turn\r\n2026-01-10,2026-01-11,Jijo,Cleaned,2026-01-11 18:30,No\r\n';
+    const { problems } = await openApp(page, { responses: { exportCleaningHistory: { ok: true, filename: 'chorenest-history-14d-2026-01-13.csv', csv, count: 1 } } });
+    await tab(page, 'history').click();
+    const button = panel(page, 'history').getByRole('button', { name: 'Download CSV' });
+    await expect(button).toBeEnabled();
+    const [download] = await Promise.all([page.waitForEvent('download'), button.click()]);
+    expect(download.suggestedFilename()).toBe('chorenest-history-14d-2026-01-13.csv');
+    expect(require('node:fs').readFileSync(await download.path(), 'utf8')).toBe(csv);
+    expect((await calls(page, 'exportCleaningHistory'))[0].args[0]).toEqual({ token: 'token-Jijo', range: '14d' });
+    await expect(button).toBeEnabled();
+    expect(problems).toEqual([]);
+  });
+
+  test('an empty range explains itself, offers longer ranges and disables the download', async ({ page }) => {
+    const empty = { ok: true, entries: [], range: '14d', page: 1, page_size: 25, total: 0, pages: 1 };
+    await openApp(page, { history: empty });
+    await tab(page, 'history').click();
+    await expect(panel(page, 'history')).toContainText('No cleanings in the last 14 days');
+    await expect(panel(page, 'history').getByRole('button', { name: 'Download CSV' })).toBeDisabled();
+    await expect(panel(page, 'history').locator('.filter-bar .chip')).toHaveCount(4);
+    await expectHealthyLayout(page, 'history');
   });
 });
 
@@ -819,7 +893,7 @@ test.describe('swaps', () => {
     const { problems } = await openApp(page); // Jijo
     await tab(page, 'swaps').click();
     const swaps = panel(page, 'swaps');
-    await expect(swaps).toContainText('Pending requests change nothing');
+    await expect(swaps).toContainText('Nothing changes until they accept');
     await expect(swaps.locator('.account-card')).toHaveCount(1);
     await expect(swaps.locator('.account-card')).toContainText('Hari');
     await expect(swaps.locator('.account-card')).toContainText('You clean');

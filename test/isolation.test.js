@@ -52,7 +52,7 @@ test('the browser can call exactly the page and sign-in functions; maintenance l
   // Sign-in, password change and sign-out; then the schedule, cleaning and vacations, each behind a session.
   assert.deepEqual(browserCallable(files), [
     'acceptSwap', 'adminAddRoommate', 'adminChangeRole', 'adminDisableSignIn', 'adminEndSessions', 'adminListAccounts', 'adminProvisionAccount', 'adminResetSignIn',
-    'cancelSwap', 'cancelVacation', 'changePassword', 'declineSwap', 'doGet', 'endVacation', 'getRotationSchedule', 'listCleaningHistory', 'listSwaps', 'listVacations',
+    'cancelSwap', 'cancelVacation', 'changePassword', 'declineSwap', 'doGet', 'endVacation', 'exportCleaningHistory', 'getRotationSchedule', 'listCleaningHistory', 'listSwaps', 'listVacations',
     'markCleaned', 'requestSwap', 'runFridayReminder', 'saveVacation', 'signIn', 'signOut', 'updateVacation',
   ]);
   for (const file of backendFiles()) {

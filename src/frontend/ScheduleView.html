@@ -14,7 +14,6 @@ const STATUS_MESSAGES = {
   overdue: 'Overdue: the nest is waiting for this one.',
   waiting: 'Not open yet. Enjoy the break.',
 };
-const STATUS_EMOJIS = { pending: '✨', overdue: '', waiting: '✨' };
 const STEP_LABELS = ['Up next', 'Then', 'After that'];
 const AVATAR_TONES = 6;
 const CONFIG_CODES = [
@@ -66,6 +65,30 @@ function escapeHtml(value) {
   });
 }
 
+// Line icons, drawn in the text colour. Decorative only: every icon sits next to words, so it is hidden from screen readers.
+const ICON_PATHS = {
+  calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
+  luggage: '<rect x="4" y="7.5" width="16" height="12.5" rx="2.5"/><path d="M9 7.5V5.5a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 15 5.5v2M9 11.5v5M15 11.5v5"/>',
+  swap: '<path d="M7 4 3.5 7.5 7 11M3.5 7.5H17M17 13l3.5 3.5L17 20M20.5 16.5H7"/>',
+  history: '<path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1L3.5 8.5"/><path d="M3.5 3.5v5h5M12 7.5V12l3 2"/>',
+  check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  download: '<path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19.5h14"/>',
+  edit: '<path d="M4.5 19.5h4l10-10-4-4-10 10v4ZM13 7.5l3.5 3.5"/>',
+  trash: '<path d="M4.5 7h15M10 11v6M14 11v6M6.5 7l.9 12.1a1.5 1.5 0 0 0 1.5 1.4h6.2a1.5 1.5 0 0 0 1.5-1.4L17.5 7M9.5 7V4.5h5V7"/>',
+  home: '<path d="M4 11 12 4.5l8 6.5M6 9.5v10h12v-10"/><path d="M10 19.5v-5h4v5"/>',
+  person: '<circle cx="12" cy="8.5" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/>',
+  personAdd: '<circle cx="9.5" cy="8.5" r="3.5"/><path d="M3 20a6.5 6.5 0 0 1 13 0M18.5 8v6M15.5 11h6"/>',
+  shield: '<path d="M12 3.5 5.5 6v5.5c0 4 2.8 7.3 6.5 8.7 3.7-1.4 6.5-4.7 6.5-8.7V6Z"/>',
+  signOut: '<path d="M14.5 4.5h4v15h-4M10 8l-4 4 4 4M6 12h10"/>',
+  left: '<path d="m14.5 6-6 6 6 6"/>',
+  right: '<path d="m9.5 6 6 6-6 6"/>',
+};
+
+function icon(name) {
+  return '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">' + (ICON_PATHS[name] || '') + '</svg>';
+}
+
 function displayName(person) {
   return person.name || 'Unknown roommate';
 }
@@ -89,20 +112,20 @@ function joinNames(names) {
   return names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1];
 }
 
-function renderNote(icon, text) {
-  return '<p class="note"><span class="note-icon" aria-hidden="true">' + icon + '</span><span>' + escapeHtml(text) + '</span></p>';
+function renderNote(iconName, text) {
+  return '<p class="note">' + icon(iconName) + '<span>' + escapeHtml(text) + '</span></p>';
 }
 
 // At most one swap note and one vacation note per turn, in plain words.
 function turnNotes(turn) {
   const notes = [];
   if (turn.assignee.roommate_id !== turn.owner.roommate_id) {
-    notes.push(renderNote('🔄', 'Covering for ' + displayName(turn.owner) + ' (swap).'));
+    notes.push(renderNote('swap', 'Covering for ' + displayName(turn.owner) + ' (swap).'));
   }
   if (turn.vacation_conflict_id) {
-    notes.push(renderNote('🏖️', displayName(turn.assignee) + ' is away, so this turn will be skipped.'));
+    notes.push(renderNote('luggage', displayName(turn.assignee) + ' is away, so this turn will be skipped.'));
   } else if (turn.skipped.length) {
-    notes.push(renderNote('🏖️', joinNames(turn.skipped.map(displayName)) + (turn.skipped.length > 1 ? ' are' : ' is') + ' away.'));
+    notes.push(renderNote('luggage', joinNames(turn.skipped.map(displayName)) + (turn.skipped.length > 1 ? ' are' : ' is') + ' away.'));
   }
   return notes.join('');
 }
@@ -147,21 +170,21 @@ function markableTurn(schedule, selectedId) {
 }
 
 function renderMarkAction(canMark) {
-  return canMark ? '<button class="button mark-button" type="button" data-action="mark-cleaned"><span aria-hidden="true">🧹</span> Mark as cleaned</button>' : '';
+  return canMark ? '<button class="button mark-button" type="button" data-action="mark-cleaned">' + icon('check') + '<span>Mark as cleaned</span></button>' : '';
 }
 
 function renderConfirmDialog(schedule, selectedId) {
-  return '<div class="dialog-body"><p class="dialog-emoji" aria-hidden="true">🧹</p>' +
+  return '<div class="dialog-body">' +
     '<h2 id="confirm-title">Mark ' + escapeHtml(TASK_NAME) + ' as cleaned?</h2>' +
     '<p>' + escapeHtml(rosterName(schedule, selectedId)) + ', you’re telling everyone the whole home is clean. ' +
     'It’s saved for the household and can’t be undone from the app.</p>' +
     '<div class="dialog-actions">' +
-    '<button class="button" type="button" data-action="confirm-clean">Yes, it’s clean <span aria-hidden="true">✨</span></button>' +
+    '<button class="button" type="button" data-action="confirm-clean">Yes, it’s clean</button>' +
     '<button class="button button-quiet" type="button" data-action="cancel-clean" autofocus>Not yet</button></div></div>';
 }
 
 function renderSaving() {
-  return '<div class="dialog-body" role="status"><p class="dialog-emoji" aria-hidden="true">🧹</p><h2 id="confirm-title">Saving…</h2></div>';
+  return '<div class="dialog-body" role="status"><h2 id="confirm-title">Saving…</h2></div>';
 }
 
 const CLEAN_ERROR_MESSAGES = {
@@ -187,7 +210,7 @@ function cleanNotice(result, name) {
 
 function renderNotice(notice) {
   return '<p class="notice notice-' + escapeHtml(notice.kind) + '" role="' + (notice.kind === 'error' ? 'alert' : 'status') + '">' +
-    (notice.kind === 'success' ? '<span aria-hidden="true">✨</span> ' : '') + escapeHtml(notice.text) + '</p>';
+    escapeHtml(notice.text) + '</p>';
 }
 
 function renderBadge(status) {
@@ -203,9 +226,8 @@ function renderCurrentTurn(turn, canMark) {
     '<div class="hero-top"><h2 class="eyebrow" id="current-title">Current turn</h2>' + renderBadge(turn.status) + '</div>' +
     '<div class="hero-person">' + avatar(turn.assignee, 'lg') +
     '<div class="person-text"><p class="name">' + escapeHtml(displayName(turn.assignee)) + '</p>' +
-    '<p class="task"><span aria-hidden="true">🧹</span> ' + escapeHtml(TASK_NAME) + '</p></div></div>' +
-    '<p class="message">' + (STATUS_EMOJIS[status] ? '<span aria-hidden="true">' + STATUS_EMOJIS[status] + '</span> ' : '') +
-    escapeHtml(STATUS_MESSAGES[status]) + '</p>' +
+    '<p class="task">' + escapeHtml(TASK_NAME) + '</p></div></div>' +
+    '<p class="message">' + escapeHtml(STATUS_MESSAGES[status]) + '</p>' +
     '<dl class="facts">' +
     '<div><dt>Cleaning weekend</dt><dd>' + escapeHtml(formatWeekend(turn)) + '</dd></div>' +
     '<div><dt>' + (overdue ? 'Was due' : 'Due') + '</dt><dd>' + escapeHtml('End of ' + formatDueDay(turn)) + '</dd></div></dl>' +
@@ -222,7 +244,7 @@ function renderUpcomingTurns(turns) {
       '<p class="when">' + escapeHtml(formatWeekend(turn)) + '</p>' + turnNotes(turn) + '</div></li>';
   }).join('');
   return '<section class="card upcoming" aria-labelledby="upcoming-title">' +
-    '<h2 class="eyebrow section-title" id="upcoming-title">Coming up</h2><ol class="timeline">' + items + '</ol></section>';
+    '<h2 class="eyebrow section-title" id="upcoming-title">' + icon('calendar') + 'Coming up</h2><ol class="timeline">' + items + '</ol></section>';
 }
 
 // One current-turn card, then "Who's away" (filled in by the page when vacations arrive) and the turns after it.
@@ -240,8 +262,8 @@ function renderLoading() {
     '<div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div></div>';
 }
 
-function renderState(icon, title, message, code) {
-  return '<section class="card state"><span class="state-icon" aria-hidden="true">' + icon + '</span>' +
+function renderState(title, message, code) {
+  return '<section class="card state">' +
     '<h2>' + escapeHtml(title) + '</h2><p>' + escapeHtml(message) + '</p>' +
     '<button class="button" type="button" data-action="retry">Try again</button>' +
     (code ? '<p class="code">Error code: ' + escapeHtml(code) + '</p>' : '') + '</section>';
@@ -250,18 +272,18 @@ function renderState(icon, title, message, code) {
 // Server messages can name configuration details, so visitors only get a code and a plain explanation.
 function renderProblem(code) {
   if (code === 'ROTATION_EMPTY') {
-    return renderState('✨', 'No rotation yet', 'Once roommates are added to the rotation, the cleaning schedule will appear here.');
+    return renderState('No rotation yet', 'Once roommates are added to the rotation, the cleaning schedule will appear here.');
   }
   if (CONFIG_CODES.indexOf(code) !== -1) {
-    return renderState('🧹', 'ChoreNest isn’t set up correctly', 'Ask the app owner to check the configuration, then try again.', code);
+    return renderState('ChoreNest isn’t set up correctly', 'Ask the app owner to check the configuration, then try again.', code);
   }
   if (code === 'ROTATION_DATA_INVALID') {
-    return renderState('🧹', 'The rotation data needs attention', 'Something in the rotation records isn’t valid. Ask the app owner to check the Google Sheet.', code);
+    return renderState('The rotation data needs attention', 'Something in the rotation records isn’t valid. Ask the app owner to check the Google Sheet.', code);
   }
   if (code === 'REQUEST_FAILED') {
-    return renderState('🧹', 'Couldn’t reach the server', 'Check your connection and try again.', code);
+    return renderState('Couldn’t reach the server', 'Check your connection and try again.', code);
   }
-  return renderState('🧹', 'Something went wrong', 'Try again in a moment.', code);
+  return renderState('Something went wrong', 'Try again in a moment.', code);
 }
 
 function isValidPerson(person) {

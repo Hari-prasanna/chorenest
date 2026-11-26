@@ -104,7 +104,7 @@ function assertRoommate_(roommate) {
   }
   // Sheets would read these as formulas or numbers.
   if (FORMULA_START_PATTERN.test(name)) fail('name must not start with = + - @ or a tab.');
-  if (roommate.email.length > 254 || roommate.email !== roommate.email.toLowerCase() || !EMAIL_PATTERN.test(roommate.email)) {
+  if (roommate.email.length > 254 || roommate.email !== roommate.email.toLowerCase() || !EMAIL_PATTERN.test(roommate.email) || FORMULA_START_PATTERN.test(roommate.email)) {
     fail('email must be a valid address in lower case.');
   }
   if (!MEMBER_CODE_PATTERN.test(roommate.member_code)) fail('member_code must look like ABC-001.');

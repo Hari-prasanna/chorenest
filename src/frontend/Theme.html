@@ -2,6 +2,7 @@
 // Theme: Light, Dark or System. Runs in <head> so the saved choice is applied before the page paints.
 const THEME_STORAGE_KEY = 'chorenest-theme';
 const THEME_CHOICES = ['light', 'dark', 'system'];
+const THEME_DEFAULT = 'dark'; // a first visit (nothing saved, or an unknown value) starts in Dark; a saved choice wins
 
 const systemDark = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : { matches: false, addEventListener: function () {} };
 let themeChoice = readThemeChoice();
@@ -9,7 +10,7 @@ let themeToggle = null;
 
 function readThemeChoice() {
   const saved = readStored(THEME_STORAGE_KEY);
-  return THEME_CHOICES.indexOf(saved) === -1 ? 'system' : saved;
+  return THEME_CHOICES.indexOf(saved) === -1 ? THEME_DEFAULT : saved;
 }
 
 function applyTheme() {

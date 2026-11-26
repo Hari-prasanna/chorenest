@@ -23,8 +23,7 @@ const SWAP_MESSAGES = {
 const SWAP_FALLBACK = 'Something went wrong, so nothing was changed. Try again in a moment.';
 // Refusals that mean the page's copy is out of date: the dialog closes and the list is reloaded.
 const SWAP_REFRESH_CODES = ['SWAP_TURN_NOT_FOUND', 'SWAP_TURN_STARTED', 'SWAP_TURN_TAKEN', 'SWAP_PARTNER_UNAVAILABLE', 'SWAP_NOT_FOUND', 'SWAP_NOT_PENDING', 'SWAP_STALE'];
-const SWAP_EXPLANATION = 'Pending requests change nothing: cleaning stays with whoever it is scheduled for until the other roommate accepts. ' +
-  'A swap trades just those two weekends; the rotation order stays the same.';
+const SWAP_EXPLANATION = 'Trade one cleaning weekend for another. Nothing changes until they accept, and the rotation order stays put.';
 
 function swapMessage(code) {
   return Object.prototype.hasOwnProperty.call(SWAP_MESSAGES, code) ? SWAP_MESSAGES[code] : SWAP_FALLBACK;
@@ -107,10 +106,10 @@ function renderSwapsPanel(view) {
     });
     body = view.swaps.length
       ? renderSwapGroup('Asked of you', incoming) + renderSwapGroup('You asked', outgoing) + renderSwapGroup('Accepted', accepted)
-      : '<section class="card state state-compact"><span class="state-icon" aria-hidden="true">🔄</span><h3>No swaps yet</h3>' +
-        '<p>' + (canRequest ? 'Ask a roommate to trade a cleaning weekend.' : 'There is no turn you could swap right now.') + '</p></section>';
+      : '<section class="card state state-compact"><h3>No swaps yet</h3>' +
+        '<p>' + (canRequest ? 'Busy weekend coming up? Ask a roommate to trade.' : 'There is no turn you could swap right now.') + '</p></section>';
   } else if (view.status === 'error' || view.status === 'network') {
-    body = '<section class="card state state-compact"><span class="state-icon" aria-hidden="true">🔄</span><h3>Couldn’t load the swaps</h3><p>' +
+    body = '<section class="card state state-compact"><h3>Couldn’t load the swaps</h3><p>' +
       (view.status === 'network' ? 'Check your connection and try again.' : 'Try again in a moment.') + '</p>' +
       '<button class="button" type="button" data-action="swap-retry">Try again</button></section>';
   } else {
@@ -118,7 +117,7 @@ function renderSwapsPanel(view) {
   }
   return '<div class="layout"><div class="vacation-top"><div><h2 class="panel-title">Swaps</h2>' +
     '<p class="vacation-intro">' + escapeHtml(SWAP_EXPLANATION) + '</p></div>' +
-    (canRequest ? '<button class="button" type="button" data-action="swap-request">Request a swap</button>' : '') + '</div>' +
+    (canRequest ? '<button class="button" type="button" data-action="swap-request">' + icon('swap') + '<span>Request a swap</span></button>' : '') + '</div>' +
     (view.notice ? renderNotice(view.notice) : '') + body + '</div>';
 }
 

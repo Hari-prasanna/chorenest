@@ -177,7 +177,7 @@ function loadFrontend({ storage = new Map(), systemDark = false, storageBlocked 
     },
   };
   for (const name of ['getRotationSchedule', 'markCleaned', 'listVacations', 'saveVacation', 'cancelVacation', 'updateVacation', 'endVacation', 'signIn', 'changePassword', 'signOut',
-    'listCleaningHistory', 'listSwaps', 'requestSwap', 'acceptSwap', 'declineSwap', 'cancelSwap', 'adminListAccounts', 'adminAddRoommate', 'adminProvisionAccount', 'adminResetSignIn', 'adminDisableSignIn', 'adminEndSessions', 'adminChangeRole']) {
+    'listCleaningHistory', 'exportCleaningHistory', 'listSwaps', 'requestSwap', 'acceptSwap', 'declineSwap', 'cancelSwap', 'adminListAccounts', 'adminAddRoommate', 'adminProvisionAccount', 'adminResetSignIn', 'adminDisableSignIn', 'adminEndSessions', 'adminChangeRole']) {
     run[name] = function (...args) {
       calls.push(name);
       callArguments.push(JSON.parse(JSON.stringify(args))); // plain data, as google.script.run would send it
@@ -215,11 +215,30 @@ function loadFrontend({ storage = new Map(), systemDark = false, storageBlocked 
     'vacation-return': returnInput,
     'away-slot': awaySlot,
   };
-  const document = { documentElement: root, getElementById: (id) => elements[id] || app };
+  // Downloads: a temporary link plus a Blob URL, as the page makes them.
+  const downloads = [];
+  const blobs = new Map();
+  const downloadFlags = { blocked: false };
+  const document = {
+    documentElement: root,
+    getElementById: (id) => elements[id] || app,
+    createElement: () => ({ click() { downloads.push({ href: this.href, download: this.download, text: blobs.get(this.href) }); } }),
+    body: { appendChild() {}, removeChild() {} },
+  };
   const context = vm.createContext({
     document,
     window: { localStorage, matchMedia: () => media },
     google: { script: { run } },
+    Blob: class { constructor(parts, options) { this.text = parts.join(''); this.type = options.type; } },
+    URL: {
+      createObjectURL: (blob) => {
+        if (downloadFlags.blocked) throw new Error('blocked');
+        const url = 'blob:test-' + (blobs.size + 1);
+        blobs.set(url, blob.text);
+        return url;
+      },
+      revokeObjectURL() {},
+    },
   });
   vm.runInContext(scriptOf('Storage.html'), context);
   vm.runInContext(scriptOf('Theme.html'), context);
@@ -282,6 +301,10 @@ function loadFrontend({ storage = new Map(), systemDark = false, storageBlocked 
     clickApp: (action) => app.listeners.click({ target: { getAttribute: (name) => (name === 'data-action' ? action : null) } }),
     clickMark: () => app.listeners.click({ target: { getAttribute: (name) => (name === 'data-action' ? 'mark-cleaned' : null) } }),
     dialogClick: (action) => dialog.listeners.click({ target: { getAttribute: (name) => (name === 'data-action' ? action : null) } }),
+    historyClick: (action, attributes = {}) =>
+      panels.history.listeners.click({ target: { getAttribute: (name) => (name === 'data-action' ? action : attributes[name] || null) } }),
+    downloads,
+    downloadFlags,
     calls,
     callArguments,
     storage,
@@ -662,19 +685,25 @@ test('no roommate names or dates are hardcoded in the frontend', () => {
 
 // Theme
 
-test('the theme starts as System and is applied before the page renders', () => {
-  const light = loadFrontend({ as: null });
-  assert.equal(light.themeAtLoad, 'light');
-  assert.deepEqual(light.pressed(), { light: 'false', dark: 'false', system: 'true' });
-  assert.equal(light.storage.size, 0);
+test('a first visit starts in Dark, whatever the system says, and it is applied before the page renders', () => {
+  const first = loadFrontend({ as: null });
+  assert.equal(first.themeAtLoad, 'dark');
+  assert.deepEqual(first.pressed(), { light: 'false', dark: 'true', system: 'false' });
+  assert.equal(first.storage.size, 0, 'the default is not saved: it is only a starting point');
+  first.setSystemDark(true);
+  first.setSystemDark(false);
+  assert.equal(first.theme(), 'dark', 'the default does not follow the system');
 
   assert.equal(loadFrontend({ systemDark: true }).themeAtLoad, 'dark');
+  assert.match(read('Index.html'), /data-choice="dark" aria-pressed="true">Dark</, 'the toggle starts on Dark too');
   const index = read('Index.html');
   assert.ok(index.indexOf("include_('frontend/Theme')") < index.indexOf('<body>'));
 });
 
 test('System follows the operating system, including when it changes', () => {
   const page = loadFrontend();
+  page.chooseTheme('system');
+  assert.equal(page.theme(), 'light');
   page.setSystemDark(true);
   assert.equal(page.theme(), 'dark');
   page.setSystemDark(false);
@@ -714,8 +743,11 @@ test('a saved choice survives a reload, and an invalid saved value is ignored', 
   assert.equal(loadFrontend({ storage: lightOnDarkSystem, systemDark: true }).themeAtLoad, 'light');
 
   const invalid = loadFrontend({ storage: new Map([['chorenest-theme', 'purple']]) });
-  assert.equal(invalid.themeAtLoad, 'light');
-  assert.deepEqual(invalid.pressed(), { light: 'false', dark: 'false', system: 'true' });
+  assert.equal(invalid.themeAtLoad, 'dark', 'an unknown value counts as a first visit');
+  assert.deepEqual(invalid.pressed(), { light: 'false', dark: 'true', system: 'false' });
+
+  const savedSystem = loadFrontend({ storage: new Map([['chorenest-theme', 'system']]), systemDark: false });
+  assert.equal(savedSystem.themeAtLoad, 'light', 'a saved System choice still follows the system');
 });
 
 test('the toggle still works for this visit when browser storage is blocked', () => {
@@ -803,14 +835,14 @@ test('the only buttons are the known ones, and the only navigation is the four-s
   const choices = [...group[1].matchAll(/<button type="button" data-choice="(\w+)" aria-pressed="(\w+)">(\w+)<\/button>/g)];
   assert.deepEqual(choices.map((m) => m.slice(1)), [
     ['light', 'false', 'Light'],
-    ['dark', 'false', 'Dark'],
-    ['system', 'true', 'System'],
+    ['dark', 'true', 'Dark'],
+    ['system', 'false', 'System'],
   ]);
   for (const [file, source] of frontendSources()) {
     for (const [button] of source.matchAll(/<button\b[^>]*>/g)) {
       assert.match(
         button,
-        /data-choice="|data-tab="(schedule|vacation|swaps|history)"|id="profile-button"|class="button auth-submit" type="submit"|data-action="(dismiss-beta|close-profile|sign-out|toggle-password|open-admin|admin-add|admin-retry|admin-back|admin-provision|admin-reset|admin-end-sessions|admin-disable|admin-role|admin-save-add|admin-save-provision|admin-confirm|admin-copy|admin-done|admin-close|retry|mark-cleaned|confirm-clean|cancel-clean|retry-vacations|plan-vacation|save-vacation|close-vacation|cancel-vacation|confirm-cancel-vacation|edit-vacation|end-vacation|save-edit|confirm-end-vacation|retry-history|swap-request|swap-retry|swap-accept|swap-decline|swap-cancel|swap-send|swap-confirm|swap-close)"/,
+        /data-choice="|data-tab="(schedule|vacation|swaps|history)"|id="profile-button"|class="button auth-submit" type="submit"|data-action="(dismiss-beta|close-profile|sign-out|toggle-password|open-admin|admin-add|admin-retry|admin-back|admin-provision|admin-reset|admin-end-sessions|admin-disable|admin-role|admin-save-add|admin-save-provision|admin-confirm|admin-copy|admin-done|admin-close|retry|mark-cleaned|confirm-clean|cancel-clean|retry-vacations|plan-vacation|save-vacation|close-vacation|cancel-vacation|confirm-cancel-vacation|edit-vacation|end-vacation|save-edit|confirm-end-vacation|retry-history|history-range|history-prev|history-next|download-history|swap-request|swap-retry|swap-accept|swap-decline|swap-cancel|swap-send|swap-confirm|swap-close)"/,
         `${file}: ${button}`
       );
     }
@@ -883,10 +915,14 @@ test('text meets WCAG AA contrast (4.5:1) on its background in both themes', () 
     ['muted', 'bg'], ['muted', 'surface'], ['muted', 'surface-soft'],
     ['accent-text', 'bg'], ['accent-text', 'surface'], ['accent-text', 'accent-soft'], ['neutral-text', 'neutral-bg'],
     ['on-solid', 'solid'], ['on-solid', 'solid-hover'],
-    // Hero card, green and (when overdue) coral, one flat colour each: its text, the hint and the tiles.
+    // Hero card, yellow and (when overdue) coral, one flat colour each: its text, the hint, the tiles and the button.
     ...['hero-bg', 'overdue-bg'].flatMap((background) => [['on-hero', background], ['on-hero-soft', background]]),
     ['hero-tile-text', 'hero-tile'], ['hero-tile-muted', 'hero-tile'],
     ['overdue-tile-text', 'overdue-tile'], ['overdue-tile-muted', 'overdue-tile'],
+    ['on-hero-button', 'hero-button'],
+    // Errors, the delete button and the active tab.
+    ['danger-text', 'danger-bg'], ['danger-text', 'surface'], ['danger-text', 'surface-soft'], ['surface', 'danger-text'],
+    ['tab-active-text', 'tab-active-bg'], ['text', 'surface'],
     ...[1, 2, 3, 4, 5, 6].map((n) => [`tone-${n}-fg`, `tone-${n}-bg`]),
   ];
   for (const [name, theme] of [['light', light], ['dark', dark]]) {
@@ -1117,7 +1153,7 @@ test('the page code holds no identity of its own: no picker, no roommate id in a
 
 // Slice 04D polish
 
-test('contextual emojis are decorative only, and later turns form a timeline', () => {
+test('no page uses emojis: notes carry hidden line icons, and later turns form a list', () => {
   const page = loadFrontend();
   page.succeed(
     schedule({
@@ -1127,10 +1163,11 @@ test('contextual emojis are decorative only, and later turns form a timeline', (
     })
   );
   const html = page.app.innerHTML;
-  for (const emoji of ['🧹', '✨', '🏖️', '🔄']) assert.match(html, new RegExp(`aria-hidden="true">${emoji}</span>`), emoji);
-
-  const withoutDecoration = html.replace(/<span[^>]*aria-hidden="true"[^>]*>[^<]*<\/span>/g, '');
-  assert.doesNotMatch(withoutDecoration, /\p{Extended_Pictographic}/u, 'every emoji is hidden from screen readers');
+  assert.doesNotMatch(html, /\p{Extended_Pictographic}/u, 'no emojis');
+  const notes = [...html.matchAll(/<p class="note"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">/g)];
+  assert.ok(notes.length >= 3, 'the swap and away notes each start with a hidden icon');
+  for (const [svg] of html.matchAll(/<svg\b[^>]*>/g)) assert.match(svg, /aria-hidden="true" focusable="false"/, svg);
+  for (const [file, source] of frontendSources()) assert.doesNotMatch(source, /\p{Extended_Pictographic}/u, `${file}: no emojis anywhere`);
 
   assert.equal(html.match(/<ol class="timeline">/g).length, 1);
   const names = [...html.matchAll(/<li class="timeline-item">[\s\S]*?class="name">([^<]*)</g)].map((m) => m[1]);
@@ -1139,8 +1176,7 @@ test('contextual emojis are decorative only, and later turns form a timeline', (
 
   const overdue = loadFrontend();
   overdue.succeed(schedule({ current: { status: 'overdue' } }));
-  assert.doesNotMatch(overdue.app.innerHTML, /aria-hidden="true">✨/);
-  assert.match(overdue.app.innerHTML, /aria-hidden="true">🧹/);
+  assert.doesNotMatch(overdue.app.innerHTML, /\p{Extended_Pictographic}/u);
 });
 
 test('hover effects are limited to hover-capable devices, and keyboard focus is always visible', () => {
@@ -1210,7 +1246,7 @@ test('confirming sends exactly the turn the page showed, ignores duplicate click
 
   page.succeed(schedule({ current: turn('Jijo', 1) }));
   const html = page.app.innerHTML;
-  assert.match(html, /<p class="notice notice-success" role="status"><span aria-hidden="true">✨<\/span> Nice work, Hari! Entire Home is marked as cleaned\.<\/p>/);
+  assert.match(html, /<p class="notice notice-success" role="status">Nice work, Hari! Entire Home is marked as cleaned\.<\/p>/);
   assert.match(textOf(html), /Current turn Pending Jijo/);
   assert.equal(hasMarkButton(html), false, 'Hari is no longer on duty');
 
@@ -1344,7 +1380,7 @@ test('compact cards show name, status and Berlin dates; the cleaning impact is f
   ));
   const html = page.panels.vacation.innerHTML;
   const text = panelText(page);
-  assert.match(text, /^Vacations Turns that fall in a vacation are skipped, with no make-up turn\. Plan vacation /);
+  assert.match(text, /^Vacations Away on your weekend\? That turn is skipped, with no make-up turn\. Plan vacation /);
   assert.match(text, /Away now Arun Away now First day away Fri 9 Jan First day back Mon 12 Jan Cleaning impact Sat 17 – Sun 18 Jan · No turn that weekend Sat 6 – Sun 7 Jun · Not scheduled yet/);
   assert.match(text, /Upcoming Jijo Upcoming First day away Fri 9 Jan First day back Mon 12 Jan Cleaning impact · 1 turn skipped Sat 10 – Sun 11 Jan · Turn skipped/);
   assert.match(text, /Recently back Hari Returned First day away Fri 3 Apr First day back Tue 7 Apr Cleaning impact Sat 4 – Sun 5 Apr · Past weekend Kim Returned First day away Sun 29 Mar First day back Wed 1 Apr/, 'latest return first');
@@ -1373,7 +1409,7 @@ test('"Who’s away" shows who is away now and who leaves within two weeks, and 
 });
 
 test('loading, empty, server problem, malformed answer and network failure each have a clear state, and Try again reloads', () => {
-  assert.match(panelText(loadedVacations(vacationList())), /Everyone’s home No vacations are planned\./);
+  assert.match(panelText(loadedVacations(vacationList())), /Everyone’s home No vacations planned\. The dust bunnies are outnumbered\./);
 
   for (const [answer, pattern] of [
     [{ ok: false, error: { code: 'DATABASE_NOT_SET_UP', message: 'Server detail secret' } }, /Couldn’t load vacations Try again in a moment\./],
@@ -1419,25 +1455,37 @@ test('Plan vacation is offered to every signed-in roommate', () => {
   }
 });
 
-test('only your own vacation offers actions: Cancel when allowed, Edit dates while upcoming or away, and I’m back while away', () => {
+test('only your own vacation offers actions: Delete when the server allows it, Edit dates while upcoming or away, and I’m back while away', () => {
   const list = vacationList(
     vacationItem('Hari'),
     vacationItem('Hari', { vacation_id: 'v-used', cancellable: false }),
     vacationItem('Hari', { vacation_id: 'v-away', state: 'away', cancellable: false }),
+    vacationItem('Hari', { vacation_id: 'v-away-free', state: 'away', cancellable: true }),
     vacationItem('Hari', { vacation_id: 'v-back', state: 'returned', cancellable: false }),
-    vacationItem('Hari', { vacation_id: null, state: 'upcoming', cancellable: false }),
+    vacationItem('Hari', { vacation_id: 'v-back-free', state: 'returned', cancellable: true }),
+    vacationItem('Hari', { vacation_id: null, state: 'upcoming', cancellable: true }),
     vacationItem('Jijo'),
-    vacationItem('Jijo', { vacation_id: 'v-jijo-away', state: 'away', cancellable: false })
+    vacationItem('Jijo', { vacation_id: 'v-jijo-away', state: 'away', cancellable: true })
   );
   const page = loadedVacations(list);
   const html = page.panels.vacation.innerHTML;
   const actions = [...html.matchAll(/data-action="(cancel-vacation|edit-vacation|end-vacation)" data-vacation-id="([^"]*)"/g)].map((m) => [m[1], m[2]]);
   assert.deepEqual(actions, [
-    ['edit-vacation', 'v-away'], ['end-vacation', 'v-away'],
-    ['cancel-vacation', 'v-Hari'], ['edit-vacation', 'v-Hari'],
+    ['end-vacation', 'v-away'], ['edit-vacation', 'v-away'],
+    ['end-vacation', 'v-away-free'], ['edit-vacation', 'v-away-free'], ['cancel-vacation', 'v-away-free'],
+    ['edit-vacation', 'v-Hari'], ['cancel-vacation', 'v-Hari'],
     ['edit-vacation', 'v-used'],
-  ], 'nothing for returned vacations, hand-typed rows without an ID, or anyone else');
+    ['cancel-vacation', 'v-back-free'],
+  ], 'Delete only where the server said it is safe; nothing for hand-typed rows without an ID, or anyone else');
+  assert.match(html, /data-action="cancel-vacation" data-vacation-id="v-Hari" aria-label="Delete vacation">/);
   assert.doesNotMatch(html, / disabled/);
+
+  page.panelClick('cancel-vacation', { 'data-vacation-id': 'v-used' });
+  page.panelClick('cancel-vacation', { 'data-vacation-id': 'v-jijo-away' });
+  assert.equal(page.vacationDialog.open, false, 'a vacation the server marked unsafe, or someone else’s, opens nothing');
+  page.panelClick('cancel-vacation', { 'data-vacation-id': 'v-back-free' });
+  assert.match(dialogText(page), /^Delete this vacation\? Hari: .*It leaves the list\. The cleaning history stays as it is\./);
+  page.vacationClick('close-vacation');
 
   page.panelClick('edit-vacation', { 'data-vacation-id': 'v-Jijo' });
   page.panelClick('end-vacation', { 'data-vacation-id': 'v-Hari' });
@@ -1718,11 +1766,11 @@ test('if the answer never arrives or makes no sense, the list is reloaded with a
   }
 });
 
-test('cancelling asks first, sends exactly the roommate and vacation once, then refreshes', () => {
+test('deleting asks first, sends exactly the roommate and vacation once, then refreshes', () => {
   const page = loadedVacations(vacationList(vacationItem('Hari')));
   page.panelClick('cancel-vacation', { 'data-vacation-id': 'v-Hari' });
   assert.equal(page.vacationDialog.open, true);
-  assert.match(dialogText(page), /Cancel this vacation\? Hari: Fri 9 Jan – back Mon 12 Jan\. Your turns in that time will count again\./);
+  assert.match(dialogText(page), /Delete this vacation\? Hari: Fri 9 Jan – back Mon 12 Jan\. Your turns in that time count again\. Delete vacation Keep it/);
   assert.match(page.vacationDialog.innerHTML, /data-action="close-vacation" autofocus>Keep it</, 'the safe choice has focus');
   page.vacationClick('close-vacation');
   assert.equal(page.vacationDialog.open, false);
@@ -1736,12 +1784,13 @@ test('cancelling asks first, sends exactly the roommate and vacation once, then 
   page.succeedCall(2, { ok: true });
   assert.deepEqual(page.calls.slice(3), ['getRotationSchedule', 'listVacations']);
   page.succeedCall(4, vacationList());
-  assert.match(panelText(page), /Vacation cancelled\..*Everyone’s home/);
+  assert.match(panelText(page), /Vacation deleted\..*Everyone’s home/);
 });
 
-test('a cancel that is refused or unconfirmed reloads the list, with the reason in plain words', () => {
+test('a delete that is refused or unconfirmed reloads the list, with the reason in plain words', () => {
   const reasons = {
-    VACATION_IN_USE: /already skipped a turn/, VACATION_STARTED: /has started/, NOT_YOUR_VACATION: /belongs to someone else/, VACATION_NOT_FOUND: /isn’t there any more/, WRITE_FAILED: /Nothing was recorded/,
+    VACATION_IN_USE: /already skipped a turn, so it stays on record and can’t be deleted/, VACATION_DELETE_CONFLICT: /would change the current cleaning turn, so it stays/,
+    NOT_YOUR_VACATION: /belongs to someone else/, VACATION_NOT_FOUND: /isn’t there any more/, WRITE_FAILED: /Nothing was recorded/,
   };
   for (const [code, pattern] of Object.entries(reasons)) {
     const page = loadedVacations(vacationList(vacationItem('Hari')));
@@ -1954,7 +2003,7 @@ test('the navigation is a bottom bar on phones and a row on wide screens, and hi
   const wide = blockAt(css, css.indexOf('@media (min-width: 760px)'));
   assert.match(blockAt(wide, wide.indexOf('.tabs {')), /position: static;/);
   assert.match(css, /\[hidden\]\s*{\s*display: none !important;/);
-  assert.match(css, /padding: 16px 16px 104px;/, 'the bar never covers the end of the page');
+  assert.match(blockAt(css, css.indexOf('  .page {')), /padding: var\(--space-3\) var\(--space-4\) 96px;/, 'the bar never covers the end of the page');
   assert.match(css, /env\(safe-area-inset-bottom\)/);
   assert.match(css, /\.tab\[aria-current="page"\]/);
 });
@@ -1969,12 +2018,12 @@ test('a tap on the icon or label inside a button counts as a tap on the button',
 
   page.tabClick('schedule');
   page.app.listeners.click({ target: inside(button('data-action', 'mark-cleaned')) });
-  assert.equal(page.dialog.open, true, 'the emoji of Mark as cleaned');
+  assert.equal(page.dialog.open, true, 'the icon of Mark as cleaned');
 
   const vacation = loadedVacations(vacationList(vacationItem('Hari')));
   const cancel = { getAttribute: (name) => ({ 'data-action': 'cancel-vacation', 'data-vacation-id': 'v-Hari' })[name] || null };
   vacation.panels.vacation.listeners.click({ target: { getAttribute: () => null, closest: () => cancel } });
-  assert.match(textOf(vacation.vacationDialog.innerHTML), /Cancel this vacation\?/, 'the label of Cancel vacation');
+  assert.match(textOf(vacation.vacationDialog.innerHTML), /Delete this vacation\?/, 'the label of Delete');
 });
 
 test('Schedule and vacations are fetched again only after they have gone stale, and never while saving', () => {
@@ -2196,70 +2245,162 @@ test('signing out from the admin section clears it for the next person', () => {
   assert.equal(page.adminDialog.innerHTML, '');
 });
 
-// History: the latest cleanings, read-only, loaded on the first visit to the tab
+// History: a read-only table with a time range, server-side pages and a CSV download, loaded on the first visit
 
 const historyEntry = (name, n, extra = {}) => ({
   log_id: `log-${n}`, roommate: person(name), weekend_starts_at: turn(name, -n).weekend_starts_at, due_at: turn(name, -n).due_at,
   outcome: 'completed', completed_at: '2026-01-11T17:30:00.000Z', resolved_at: '2026-01-11T17:30:00.000Z', swapped: false, ...extra,
 });
-const historyList = (...entries) => ({ ok: true, entries, limit: 10 });
+const historyList = (entries, extra = {}) => ({ ok: true, entries, range: '14d', page: 1, page_size: 25, total: entries.length, pages: 1, ...extra });
 const historyText = (page) => textOf(page.panels.history.innerHTML);
+const historyArgs = (page) => page.callArguments[page.calls.lastIndexOf('listCleaningHistory')][0];
+const openHistory = (page = withHari()) => {
+  page.tabClick('history');
+  return page;
+};
 
-test('History loads with the session on its first visit and shows each cleaning as a read-only timeline', () => {
+test('History loads the last 14 days on its first visit and shows a read-only table', () => {
   const page = withHari();
   page.succeed(vacationList());
   assert.equal(page.calls.includes('listCleaningHistory'), false, 'not loaded until asked for');
-  page.tabClick('history');
+  openHistory(page);
   assert.equal(page.calls[page.calls.length - 1], 'listCleaningHistory');
-  assert.deepEqual(page.callArguments[page.calls.length - 1], [{ token: 'token-Hari' }]);
+  assert.deepEqual(historyArgs(page), { token: 'token-Hari', range: '14d', page: 1 });
   assert.match(historyText(page), /Loading history…/);
-  page.succeed(historyList(
+  assert.match(page.panels.history.innerHTML, /aria-pressed="true">Last 14 days/, 'the filter shows while loading');
+  page.succeed(historyList([
     historyEntry('Jijo', 1),
-    historyEntry('Arun', 2, { outcome: 'vacation_skipped', completed_at: null }),
+    historyEntry('Arun', 2, { outcome: 'vacation_skipped', completed_at: null, resolved_at: '2026-01-03T08:00:00.000Z' }),
     historyEntry('Hari', 3, { outcome: 'admin_resolved', completed_at: null, resolved_at: '2026-01-05T09:00:00.000Z', swapped: true }),
-  ));
+  ]));
+  const html = page.panels.history.innerHTML;
   const text = historyText(page);
-  assert.match(text, /^History Who cleaned, and which turns were skipped. Latest cleanings/);
-  assert.match(text, /Jijo Cleaned Sat 10 – Sun 11 Jan Done Sun 11 Jan, 18:30/);
-  assert.match(text, /Arun Skipped: away Sat 3 – Sun 4 Jan Away that weekend, no make-up turn/);
-  assert.match(text, /Hari Closed by the app owner Sat 27 – Sun 28 Dec Closed Mon 5 Jan, 10:00 without a cleaning · swapped turn/);
-  assert.match(text, /The latest 10, newest first · Times in Berlin$/);
-  assert.doesNotMatch(page.panels.history.innerHTML, /<(button|input|form|select)\b/, 'read-only');
+  assert.match(text, /^History The receipts: who cleaned, and which turns were skipped\. Download CSV Last 14 days Last 30 days Last 90 days All time Last 14 days Cleaning weekend Roommate Status Resolved/);
+  assert.match(text, /Sat 10 – Sun 11 Jan Jijo Cleaned Sun 11 Jan, 18:30/);
+  assert.match(text, /Sat 3 – Sun 4 Jan Arun Skipped: away Sat 3 Jan, 09:00/);
+  assert.match(text, /Sat 27 – Sun 28 Dec Hari Closed by the app owner Swapped turn Mon 5 Jan, 10:00/);
+  assert.match(text, /Newest first · Times in Berlin$/);
+  assert.doesNotMatch(text, /Page \d/, 'one page needs no pager');
+  assert.equal((html.match(/<tr>/g) || []).length, 4, 'a header row and three records');
+  assert.equal((html.match(/<th scope="row"/g) || []).length, 3);
+  assert.doesNotMatch(html, /<(input|form|select|a)\b/);
+  assert.doesNotMatch(html, /\p{Extended_Pictographic}/u, 'no decorative emojis');
 
   const calls = page.calls.length;
   page.tabClick('schedule');
-  page.tabClick('history');
+  openHistory(page);
   assert.equal(page.calls.length, calls, 'a recent history is kept');
 });
 
-test('History has clear empty and error states, retries, escapes names, and refreshes after a cleaning', () => {
-  const empty = withHari();
-  empty.tabClick('history');
-  empty.succeed(historyList());
-  assert.match(historyText(empty), /No cleanings yet Once a turn is marked as cleaned, it shows up here./);
+test('choosing a range asks the server for page 1 of that range, and the chosen range is shown as pressed', () => {
+  const page = openHistory();
+  page.succeed(historyList([historyEntry('Jijo', 1)]));
+  page.historyClick('history-range', { 'data-range': '90d' });
+  assert.deepEqual(historyArgs(page), { token: 'token-Hari', range: '90d', page: 1 });
+  assert.match(page.panels.history.innerHTML, /aria-pressed="true">Last 90 days/);
+  assert.equal((page.panels.history.innerHTML.match(/aria-pressed="true"/g) || []).length, 1);
+  page.succeed(historyList([historyEntry('Jijo', 1)], { range: '90d' }));
 
-  const broken = withHari();
-  broken.tabClick('history');
+  const before = page.calls.length;
+  page.historyClick('history-range', { 'data-range': '90d' }); // already chosen
+  page.historyClick('history-range', { 'data-range': '7d' }); // not a range
+  page.historyClick('history-range', {});
+  assert.equal(page.calls.length, before, 'nothing asked');
+  page.historyClick('history-range', { 'data-range': 'all' });
+  assert.equal(historyArgs(page).range, 'all');
+  page.succeed(historyList([historyEntry('Jijo', 1)], { range: 'all' }));
+  page.tabClick('schedule');
+  assert.match(page.panels.history.innerHTML, /aria-pressed="true">All time/, 'the range is kept while the tab is closed');
+});
+
+test('pages come from the server: next and previous ask for the neighbouring page, and the edges do nothing', () => {
+  const page = openHistory();
+  const entries = Array.from({ length: 25 }, (_, n) => historyEntry('Jijo', n));
+  page.succeed(historyList(entries, { range: 'all', total: 61, pages: 3 }));
+  assert.match(historyText(page), /Page 1 of 3 1–25 of 61/);
+  assert.match(page.panels.history.innerHTML, /data-action="history-prev" disabled/);
+  assert.doesNotMatch(page.panels.history.innerHTML, /data-action="history-next" disabled/);
+
+  const before = page.calls.length;
+  page.historyClick('history-prev');
+  assert.equal(page.calls.length, before, 'no page before the first');
+  page.historyClick('history-next');
+  assert.deepEqual(historyArgs(page), { token: 'token-Hari', range: 'all', page: 2 });
+  page.succeed(historyList(entries, { range: 'all', total: 61, pages: 3, page: 2 }));
+  assert.match(historyText(page), /Page 2 of 3 26–50 of 61/);
+  page.historyClick('history-next');
+  page.succeed(historyList(entries.slice(0, 11), { range: 'all', total: 61, pages: 3, page: 3 }));
+  assert.match(historyText(page), /Page 3 of 3 51–61 of 61/);
+  assert.match(page.panels.history.innerHTML, /data-action="history-next" disabled/);
+  const last = page.calls.length;
+  page.historyClick('history-next');
+  assert.equal(page.calls.length, last, 'no page after the last');
+  page.historyClick('history-prev');
+  assert.equal(historyArgs(page).page, 2);
+
+  // Changing the range starts again at page 1.
+  page.succeed(historyList(entries, { range: 'all', total: 61, pages: 3, page: 2 }));
+  page.historyClick('history-range', { 'data-range': '30d' });
+  assert.deepEqual(historyArgs(page), { token: 'token-Hari', range: '30d', page: 1 });
+});
+
+test('an older answer never replaces a newer one, and the page follows the server when it moved to the last page', () => {
+  const page = openHistory();
+  page.succeed(historyList([historyEntry('Jijo', 1)]));
+  page.historyClick('history-range', { 'data-range': '30d' }); // call A
+  const a = page.calls.length - 1;
+  page.historyClick('history-range', { 'data-range': '90d' }); // call B
+  const b = page.calls.length - 1;
+  page.succeedCall(b, historyList([historyEntry('Arun', 5)], { range: '90d' }));
+  page.succeedCall(a, historyList([historyEntry('Kim', 6)], { range: '30d' }));
+  assert.match(historyText(page), /Arun/);
+  assert.doesNotMatch(historyText(page), /Kim/);
+  assert.match(page.panels.history.innerHTML, /aria-pressed="true">Last 90 days/);
+
+  const moved = openHistory(withHari());
+  moved.succeed(historyList(Array.from({ length: 25 }, (_, n) => historyEntry('Jijo', n)), { range: 'all', total: 60, pages: 3 }));
+  moved.historyClick('history-next');
+  moved.succeed(historyList([historyEntry('Jijo', 1)], { range: 'all', total: 26, pages: 2, page: 2 })); // the list shrank meanwhile
+  assert.match(historyText(moved), /Page 2 of 2 26–26 of 26/);
+});
+
+test('History has clear empty states for every range, an error state with retry, escapes names, and refreshes after a cleaning', () => {
+  const empty = openHistory();
+  empty.succeed(historyList([], { total: 0 }));
+  assert.match(historyText(empty), /No cleanings in the last 14 days Choose a longer range to see older cleanings\./);
+  assert.match(empty.panels.history.innerHTML, /data-action="download-history" disabled/, 'nothing to download');
+  empty.historyClick('history-range', { 'data-range': '30d' });
+  empty.succeed(historyList([], { range: '30d', total: 0 }));
+  assert.match(historyText(empty), /No cleanings in the last 30 days/);
+  empty.historyClick('history-range', { 'data-range': '90d' });
+  empty.succeed(historyList([], { range: '90d', total: 0 }));
+  assert.match(historyText(empty), /No cleanings in the last 90 days/);
+  empty.historyClick('history-range', { 'data-range': 'all' });
+  empty.succeed(historyList([], { range: 'all', total: 0 }));
+  assert.match(historyText(empty), /No cleanings yet Once a turn is marked as cleaned, it shows up here\./);
+
+  const broken = openHistory();
   broken.fail();
-  assert.match(historyText(broken), /Couldn’t load the history Check your connection and try again. Try again/);
-  broken.panels.history.listeners.click({ target: { getAttribute: (name) => (name === 'data-action' ? 'retry-history' : null) } });
+  assert.match(historyText(broken), /Couldn’t load the history Check your connection and try again\. Try again/);
+  assert.match(broken.panels.history.innerHTML, /data-action="history-range"/, 'the range can still be changed');
+  broken.historyClick('retry-history');
   assert.equal(broken.calls[broken.calls.length - 1], 'listCleaningHistory');
   broken.succeed({ ok: true, entries: [{ nonsense: true }] });
-  assert.match(historyText(broken), /Couldn’t load the history Try again in a moment./);
+  assert.match(historyText(broken), /Couldn’t load the history Try again in a moment\./);
+  broken.historyClick('retry-history');
+  broken.succeed(historyList([historyEntry('Jijo', 1)], { range: 'bogus' }));
+  assert.match(historyText(broken), /Couldn’t load the history/, 'an unknown range in the answer is not trusted');
 
-  const hostile = withHari();
-  hostile.tabClick('history');
-  hostile.succeed(historyList(historyEntry('<img src=x onerror=alert(1)>', 1)));
+  const hostile = openHistory();
+  hostile.succeed(historyList([historyEntry('<img src=x onerror=alert(1)>', 1)]));
   assert.doesNotMatch(hostile.panels.history.innerHTML, /<img/);
 
-  const ended = withHari();
-  ended.tabClick('history');
+  const ended = openHistory();
   ended.succeed(failure('UNAUTHENTICATED'));
   assert.equal(ended.signedIn(), false, 'an ended session goes back to sign-in');
 
-  const after = withHari();
-  after.tabClick('history');
-  after.succeed(historyList(historyEntry('Jijo', 1)));
+  const after = openHistory();
+  after.succeed(historyList([historyEntry('Jijo', 1)]));
   after.tabClick('schedule');
   after.clickMark();
   after.dialogClick('confirm-clean');
@@ -2267,6 +2408,46 @@ test('History has clear empty and error states, retries, escapes names, and refr
   const before = after.calls.length;
   after.tabClick('history');
   assert.equal(after.calls[before], 'listCleaningHistory', 'the new record is fetched on the next visit');
+  assert.deepEqual(historyArgs(after), { token: 'token-Hari', range: '14d', page: 1 });
+});
+
+test('Download CSV asks the server for the chosen range, saves the file once, and explains a failure', () => {
+  const page = openHistory();
+  page.succeed(historyList([historyEntry('Jijo', 1)], { range: '30d' }));
+  page.historyClick('download-history');
+  assert.equal(page.calls[page.calls.length - 1], 'exportCleaningHistory');
+  assert.deepEqual(page.callArguments[page.calls.length - 1], [{ token: 'token-Hari', range: '30d' }], 'only the token and the range');
+  assert.match(historyText(page), /Preparing…/);
+  assert.match(page.panels.history.innerHTML, /data-action="download-history" disabled/);
+  const before = page.calls.length;
+  page.historyClick('download-history'); // a second click while preparing
+  assert.equal(page.calls.length, before);
+  page.succeed({ ok: true, filename: 'chorenest-history-30d-2026-01-13.csv', csv: 'a,b\r\n1,2\r\n', count: 1 });
+  assert.deepEqual(page.downloads, [{ href: 'blob:test-1', download: 'chorenest-history-30d-2026-01-13.csv', text: 'a,b\r\n1,2\r\n' }]);
+  assert.match(historyText(page), /Download CSV/);
+  assert.doesNotMatch(page.panels.history.innerHTML, /role="alert"/);
+
+  for (const answer of [{ ok: true, filename: '../evil.csv', csv: 'x' }, { ok: true, csv: 5 }, failure('INTERNAL_ERROR')]) {
+    page.historyClick('download-history');
+    page.succeed(answer);
+    assert.match(page.panels.history.innerHTML, /Couldn’t prepare the download/);
+  }
+  assert.equal(page.downloads.length, 1, 'nothing was saved for a bad answer');
+
+  page.historyClick('download-history');
+  page.fail();
+  assert.match(historyText(page), /Couldn’t prepare the download\. Check your connection/);
+  page.downloadFlags.blocked = true;
+  page.historyClick('download-history');
+  page.succeed({ ok: true, filename: 'x.csv', csv: 'a' });
+  assert.match(historyText(page), /Your browser blocked the download/);
+
+  const ended = openHistory();
+  ended.succeed(historyList([historyEntry('Jijo', 1)]));
+  ended.historyClick('download-history');
+  ended.succeed(failure('UNAUTHENTICATED'));
+  assert.equal(ended.signedIn(), false);
+  assert.equal(ended.downloads.length, 0);
 });
 
 // Swaps: incoming, outgoing and accepted requests, and the request form
@@ -2302,7 +2483,7 @@ test('the Swaps tab loads with the session, explains that pending requests chang
     swapItem('Arun', 'incoming', { swap_id: 'swap-off', status: 'accepted', not_applied: true }),
   ]));
   const text = swapText(page);
-  assert.match(text, /^Swaps Pending requests change nothing: cleaning stays with whoever it is scheduled for until the other roommate accepts. A swap trades just those two weekends; the rotation order stays the same. Request a swap/);
+  assert.match(text, /^Swaps Trade one cleaning weekend for another\. Nothing changes until they accept, and the rotation order stays put\. Request a swap/);
   assert.ok(text.includes('Asked of you Jijo Waiting for an answer You clean Sat 31 Jan – Sun 1 Feb (Jijo’s turn) Jijo cleans Sat 24 – Sun 25 Jan (your turn) Accept Decline'), text);
   assert.ok(text.includes('You asked Arun Waiting for an answer You clean Sat 31 Jan – Sun 1 Feb (Arun’s turn) Arun cleans Sat 24 – Sun 25 Jan (your turn) Cancel request'), text);
   assert.ok(text.includes('Accepted Jijo Accepted You clean Sat 31 Jan – Sun 1 Feb (Jijo’s turn) Jijo cleans Sat 24 – Sun 25 Jan (your turn) Arun Not in effect'), text);
@@ -2324,7 +2505,7 @@ test('empty, error and nothing-to-swap states are clear, and a failed load can b
   const only = openSwaps(swapList([], [swapTurn('Hari', 1)]));
   assert.doesNotMatch(only.panels.swaps.innerHTML, /swap-request/, 'nobody else has a turn to take');
   const empty = openSwaps();
-  assert.ok(swapText(empty).endsWith('No swaps yet Ask a roommate to trade a cleaning weekend.'));
+  assert.ok(swapText(empty).endsWith('No swaps yet Busy weekend coming up? Ask a roommate to trade.'));
   assert.match(empty.panels.swaps.innerHTML, /data-action="swap-request"/);
 
   const broken = withHari();

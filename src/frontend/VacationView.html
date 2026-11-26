@@ -17,17 +17,18 @@ const VACATION_ERROR_MESSAGES = {
   VACATION_TOO_LONG: 'A vacation can last at most 120 days. Please split longer ones.',
   VACATION_TOO_FAR: 'A vacation can start at most a year ahead.',
   VACATION_OVERLAP: 'There is already a vacation on those dates.',
-  VACATION_LIMIT: 'Too many vacations are planned. Cancel one first.',
+  VACATION_LIMIT: 'Too many vacations are planned. Delete one first.',
   VACATION_NOT_FOUND: 'That vacation isn’t there any more.',
   RECORD_NOT_FOUND: 'That vacation isn’t there any more.',
   NOT_YOUR_VACATION: 'That vacation belongs to someone else.',
   VACATION_STARTED: 'A vacation that has started can’t be cancelled here.',
-  VACATION_IN_USE: 'This vacation has already skipped a turn, so it can’t be cancelled here.',
+  VACATION_IN_USE: 'This vacation already skipped a turn, so it stays on record and can’t be deleted.',
+  VACATION_DELETE_CONFLICT: 'Deleting this vacation would change the current cleaning turn, so it stays. Ask the app owner if it must go.',
   VACATION_CHANGED: 'This vacation changed since you loaded it. Here’s the latest.',
   VACATION_ENDED: 'This vacation is over, so it can’t be changed.',
   VACATION_START_LOCKED: 'A vacation that has started keeps its first day away.',
   VACATION_BACK_IN_PAST: 'The first day back can’t be in the past.',
-  VACATION_NOT_STARTED: 'This vacation hasn’t started yet. Edit or cancel it instead.',
+  VACATION_NOT_STARTED: 'This vacation hasn’t started yet. Edit or delete it instead.',
   VACATION_JUST_STARTED: 'This vacation started today, so it can’t end today. Ask the app owner to remove it.',
   VACATION_SKIP_RECORDED: 'A turn was already skipped for this vacation, and the new dates no longer cover it. Ask the app owner to change it.',
   VACATION_TURN_CONFLICT: 'This change would affect the current cleaning turn, so it can’t be made here. Ask the app owner to sort it out.',
@@ -97,20 +98,21 @@ function renderCleaningImpact(vacation) {
 }
 
 // One roommate's vacation as a compact card. Only your own vacation offers actions, and the server checks each again.
+// Delete appears only when the server said it is safe (`cancellable`): no skipped turn, and the current turn unchanged.
 function renderVacationCard(vacation, selectedId) {
-  const mine = Boolean(selectedId) && selectedId === vacation.roommate_id;
+  const mine = Boolean(selectedId) && selectedId === vacation.roommate_id && Boolean(vacation.vacation_id);
   const chips = renderCleaningImpact(vacation);
   const actions = [];
-  if (mine && vacation.state === 'upcoming' && vacation.cancellable) {
-    actions.push('<button class="button button-quiet button-small" type="button" data-action="cancel-vacation" data-vacation-id="' +
-      escapeHtml(vacation.vacation_id) + '">Cancel vacation</button>');
-  }
   const id = escapeHtml(vacation.vacation_id);
-  if (mine && vacation.vacation_id && (vacation.state === 'upcoming' || vacation.state === 'away')) {
-    actions.push('<button class="button button-quiet button-small" type="button" data-action="edit-vacation" data-vacation-id="' + id + '">Edit dates</button>');
+  if (mine && vacation.state === 'away') {
+    actions.push('<button class="button button-small" type="button" data-action="end-vacation" data-vacation-id="' + id + '">' + icon('home') + '<span>I’m back</span></button>');
   }
-  if (mine && vacation.vacation_id && vacation.state === 'away') {
-    actions.push('<button class="button button-small" type="button" data-action="end-vacation" data-vacation-id="' + id + '">I’m back</button>');
+  if (mine && (vacation.state === 'upcoming' || vacation.state === 'away')) {
+    actions.push('<button class="button button-quiet button-small" type="button" data-action="edit-vacation" data-vacation-id="' + id + '">' + icon('edit') + '<span>Edit dates</span></button>');
+  }
+  if (mine && vacation.cancellable) {
+    actions.push('<button class="button button-quiet button-small button-danger" type="button" data-action="cancel-vacation" data-vacation-id="' + id + '" aria-label="Delete vacation">' +
+      icon('trash') + '<span>Delete</span></button>');
   }
   return '<li class="card vacation-card">' +
     '<div class="vacation-head">' + avatar(vacationPerson(vacation), 'sm') +
@@ -145,23 +147,23 @@ function renderVacationGroups(vacations, selectedId) {
  */
 function renderVacationOverview(view) {
   const plan = view.selectedName
-    ? '<button class="button" type="button" data-action="plan-vacation"><span aria-hidden="true">🏖️</span> Plan vacation</button>'
+    ? '<button class="button" type="button" data-action="plan-vacation">' + icon('plus') + '<span>Plan vacation</span></button>'
     : '';
   let body;
   if (view.status === 'ready') {
     body = view.vacations.length
       ? renderVacationGroups(view.vacations, view.selectedId)
-      : '<section class="card state state-compact"><span class="state-icon" aria-hidden="true">🏡</span><h3>Everyone’s home</h3>' +
-        '<p>No vacations are planned.</p></section>';
+      : '<section class="card state state-compact"><h3>Everyone’s home</h3>' +
+        '<p>No vacations planned. The dust bunnies are outnumbered.</p></section>';
   } else if (view.status === 'error' || view.status === 'network') {
-    body = '<section class="card state state-compact"><span class="state-icon" aria-hidden="true">🏖️</span><h3>Couldn’t load vacations</h3><p>' +
+    body = '<section class="card state state-compact"><h3>Couldn’t load vacations</h3><p>' +
       (view.status === 'network' ? 'Check your connection and try again.' : 'Try again in a moment.') + '</p>' +
       '<button class="button" type="button" data-action="retry-vacations">Try again</button></section>';
   } else {
     body = '<div role="status"><p class="eyebrow">Loading vacations…</p><div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div></div>';
   }
   return '<div class="layout"><div class="vacation-top"><div><h2 class="panel-title">Vacations</h2>' +
-    '<p class="vacation-intro">Turns that fall in a vacation are skipped, with no make-up turn.</p></div>' + plan + '</div>' +
+    '<p class="vacation-intro">Away on your weekend? That turn is skipped, with no make-up turn.</p></div>' + plan + '</div>' +
     (view.notice ? renderNotice(view.notice) : '') + body + '</div>';
 }
 
@@ -194,11 +196,11 @@ function renderAwaySummary(view) {
   } else {
     body = '<p class="away-empty">Checking vacations…</p>';
   }
-  return '<section class="card away-card" aria-labelledby="away-title"><h2 class="eyebrow" id="away-title">Who’s away</h2>' + body + '</section>';
+  return '<section class="card away-card" aria-labelledby="away-title"><h2 class="eyebrow" id="away-title">' + icon('luggage') + 'Who’s away</h2>' + body + '</section>';
 }
 
 function renderVacationSaving() {
-  return '<div class="dialog-body dialog-scroll" role="status"><p class="dialog-emoji" aria-hidden="true">🏖️</p>' +
+  return '<div class="dialog-body dialog-scroll" role="status">' +
     '<h2 id="vacation-title">Saving…</h2></div>';
 }
 
@@ -231,7 +233,7 @@ function renderVacationEditForm(vacation, today, draft, error) {
 }
 
 function renderVacationEndConfirm(vacation, todayIso) {
-  return '<div class="dialog-body dialog-scroll"><p class="dialog-emoji" aria-hidden="true">🏡</p><h2 id="vacation-title">Back already?</h2>' +
+  return '<div class="dialog-body dialog-scroll"><h2 id="vacation-title">Back already?</h2>' +
     '<p>Today, ' + escapeHtml(formatVacationDay(todayIso)) + ', becomes your first day back. Turns from today on count for you again.</p>' +
     '<p class="who-note">Turns that are already done or skipped stay as they are.</p>' +
     '<div class="dialog-actions"><button class="button" type="button" data-action="confirm-end-vacation">Yes, I’m back</button>' +
@@ -240,15 +242,23 @@ function renderVacationEndConfirm(vacation, todayIso) {
 
 // Why "I'm back" could not be saved, in the dialog itself: nothing was changed.
 function renderVacationEndProblem(code) {
-  return '<div class="dialog-body dialog-scroll"><p class="dialog-emoji" aria-hidden="true">🏖️</p><h2 id="vacation-title">Your vacation wasn’t changed</h2>' +
+  return '<div class="dialog-body dialog-scroll"><h2 id="vacation-title">Your vacation wasn’t changed</h2>' +
     '<p class="form-error" role="alert">' + escapeHtml(vacationErrorMessage(code)) + '</p>' +
     '<div class="dialog-actions dialog-actions-single"><button class="button button-quiet" type="button" data-action="close-vacation" autofocus>OK</button></div></div>';
 }
 
+const VACATION_DELETE_EFFECTS = {
+  upcoming: 'Your turns in that time count again.',
+  away: 'Your turns from now on count again.',
+  returned: 'It leaves the list. The cleaning history stays as it is.',
+};
+
+// Deleting asks first; Keep it has the focus. The server checks again that it is still safe.
 function renderVacationCancelConfirm(vacation) {
-  return '<div class="dialog-body dialog-scroll"><p class="dialog-emoji" aria-hidden="true">🏖️</p><h2 id="vacation-title">Cancel this vacation?</h2>' +
-    '<p>' + escapeHtml(vacation.name) + ': ' + escapeHtml(formatVacationDates(vacation)) + '. Your turns in that time will count again.</p>' +
-    '<div class="dialog-actions"><button class="button" type="button" data-action="confirm-cancel-vacation">Yes, cancel it</button>' +
+  return '<div class="dialog-body dialog-scroll"><h2 id="vacation-title">Delete this vacation?</h2>' +
+    '<p>' + escapeHtml(vacation.name) + ': ' + escapeHtml(formatVacationDates(vacation)) + '. ' +
+    escapeHtml(VACATION_DELETE_EFFECTS[vacation.state] || VACATION_DELETE_EFFECTS.upcoming) + '</p>' +
+    '<div class="dialog-actions"><button class="button button-danger-solid" type="button" data-action="confirm-cancel-vacation">Delete vacation</button>' +
     '<button class="button button-quiet" type="button" data-action="close-vacation" autofocus>Keep it</button></div></div>';
 }
 </script>
