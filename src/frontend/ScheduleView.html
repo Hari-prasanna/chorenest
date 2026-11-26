@@ -65,6 +65,30 @@ function escapeHtml(value) {
   });
 }
 
+// Line icons, drawn in the text colour. Decorative only: every icon sits next to words, so it is hidden from screen readers.
+const ICON_PATHS = {
+  calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
+  luggage: '<rect x="4" y="7.5" width="16" height="12.5" rx="2.5"/><path d="M9 7.5V5.5a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 15 5.5v2M9 11.5v5M15 11.5v5"/>',
+  swap: '<path d="M7 4 3.5 7.5 7 11M3.5 7.5H17M17 13l3.5 3.5L17 20M20.5 16.5H7"/>',
+  history: '<path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1L3.5 8.5"/><path d="M3.5 3.5v5h5M12 7.5V12l3 2"/>',
+  check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  download: '<path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19.5h14"/>',
+  edit: '<path d="M4.5 19.5h4l10-10-4-4-10 10v4ZM13 7.5l3.5 3.5"/>',
+  trash: '<path d="M4.5 7h15M10 11v6M14 11v6M6.5 7l.9 12.1a1.5 1.5 0 0 0 1.5 1.4h6.2a1.5 1.5 0 0 0 1.5-1.4L17.5 7M9.5 7V4.5h5V7"/>',
+  home: '<path d="M4 11 12 4.5l8 6.5M6 9.5v10h12v-10"/><path d="M10 19.5v-5h4v5"/>',
+  person: '<circle cx="12" cy="8.5" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/>',
+  personAdd: '<circle cx="9.5" cy="8.5" r="3.5"/><path d="M3 20a6.5 6.5 0 0 1 13 0M18.5 8v6M15.5 11h6"/>',
+  shield: '<path d="M12 3.5 5.5 6v5.5c0 4 2.8 7.3 6.5 8.7 3.7-1.4 6.5-4.7 6.5-8.7V6Z"/>',
+  signOut: '<path d="M14.5 4.5h4v15h-4M10 8l-4 4 4 4M6 12h10"/>',
+  left: '<path d="m14.5 6-6 6 6 6"/>',
+  right: '<path d="m9.5 6 6 6-6 6"/>',
+};
+
+function icon(name) {
+  return '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">' + (ICON_PATHS[name] || '') + '</svg>';
+}
+
 function displayName(person) {
   return person.name || 'Unknown roommate';
 }
@@ -88,20 +112,20 @@ function joinNames(names) {
   return names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1];
 }
 
-function renderNote(icon, text) {
-  return '<p class="note"><span class="note-icon" aria-hidden="true">' + icon + '</span><span>' + escapeHtml(text) + '</span></p>';
+function renderNote(iconName, text) {
+  return '<p class="note">' + icon(iconName) + '<span>' + escapeHtml(text) + '</span></p>';
 }
 
 // At most one swap note and one vacation note per turn, in plain words.
 function turnNotes(turn) {
   const notes = [];
   if (turn.assignee.roommate_id !== turn.owner.roommate_id) {
-    notes.push(renderNote('🔄', 'Covering for ' + displayName(turn.owner) + ' (swap).'));
+    notes.push(renderNote('swap', 'Covering for ' + displayName(turn.owner) + ' (swap).'));
   }
   if (turn.vacation_conflict_id) {
-    notes.push(renderNote('🏖️', displayName(turn.assignee) + ' is away, so this turn will be skipped.'));
+    notes.push(renderNote('luggage', displayName(turn.assignee) + ' is away, so this turn will be skipped.'));
   } else if (turn.skipped.length) {
-    notes.push(renderNote('🏖️', joinNames(turn.skipped.map(displayName)) + (turn.skipped.length > 1 ? ' are' : ' is') + ' away.'));
+    notes.push(renderNote('luggage', joinNames(turn.skipped.map(displayName)) + (turn.skipped.length > 1 ? ' are' : ' is') + ' away.'));
   }
   return notes.join('');
 }
@@ -146,7 +170,7 @@ function markableTurn(schedule, selectedId) {
 }
 
 function renderMarkAction(canMark) {
-  return canMark ? '<button class="button mark-button" type="button" data-action="mark-cleaned">Mark as cleaned</button>' : '';
+  return canMark ? '<button class="button mark-button" type="button" data-action="mark-cleaned">' + icon('check') + '<span>Mark as cleaned</span></button>' : '';
 }
 
 function renderConfirmDialog(schedule, selectedId) {
@@ -220,7 +244,7 @@ function renderUpcomingTurns(turns) {
       '<p class="when">' + escapeHtml(formatWeekend(turn)) + '</p>' + turnNotes(turn) + '</div></li>';
   }).join('');
   return '<section class="card upcoming" aria-labelledby="upcoming-title">' +
-    '<h2 class="eyebrow section-title" id="upcoming-title">Coming up</h2><ol class="timeline">' + items + '</ol></section>';
+    '<h2 class="eyebrow section-title" id="upcoming-title">' + icon('calendar') + 'Coming up</h2><ol class="timeline">' + items + '</ol></section>';
 }
 
 // One current-turn card, then "Who's away" (filled in by the page when vacations arrive) and the turns after it.

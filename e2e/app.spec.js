@@ -35,7 +35,7 @@ test.describe('tab navigation', () => {
       await expectHealthyLayout(page, `tab ${name}`);
     }
     expect(await callNames(page), 'switching only loads Swaps and History, once each').toEqual([...LOADED, 'listSwaps', 'listCleaningHistory']);
-    await shot(page, testInfo, 'schedule-light');
+    await shot(page, testInfo, 'schedule-default');
     expect(problems).toEqual([]);
   });
 
@@ -107,10 +107,10 @@ test.describe('household vacations', () => {
     await expect(card(page, 'Arun').locator('.chip')).toBeHidden();
     await expect(card(page, 'Jijo').locator('summary')).toHaveText('Cleaning impact');
 
-    // Only Hari's own upcoming vacation has actions: Cancel and Edit dates.
+    // Only Hari's own upcoming vacation has actions: Edit dates and Delete.
     await expect(card(page, 'Arun').locator('button')).toHaveCount(0);
     await expect(card(page, 'Jijo').locator('button')).toHaveCount(0);
-    await expect(card(page, 'Hari').getByRole('button', { name: 'Cancel vacation' })).toBeEnabled();
+    await expect(card(page, 'Hari').getByRole('button', { name: 'Delete vacation' })).toBeEnabled();
     await expect(card(page, 'Hari').getByRole('button', { name: 'Edit dates' })).toBeEnabled();
     await expect(overview.getByRole('button', { name: /Plan vacation/ })).toBeVisible();
 
@@ -254,7 +254,7 @@ test.describe('changing a vacation', () => {
     const { problems } = await openApp(page, { as: ARUN });
     await tab(page, 'vacation').click();
     const arun = card(page, 'Arun');
-    await expect(arun.getByRole('button', { name: 'Cancel vacation' })).toHaveCount(0);
+    await expect(arun.getByRole('button', { name: 'Delete vacation' }), 'it already skipped a turn').toHaveCount(0);
     await arun.getByRole('button', { name: 'Edit dates' }).click();
     await expect(page.locator('#vacation-start')).toBeDisabled();
     await expect(page.locator('#vacation-dialog')).toContainText('Your vacation has started, so the first day away stays.');
@@ -272,6 +272,36 @@ test.describe('changing a vacation', () => {
     const arunRow = await listed(page, 'v-arun');
     expect((await calls(page, 'endVacation')).map((call) => call.args)).toEqual([[{ token: 'token-Arun', vacation_id: 'v-arun', seen_start: arunRow.start_date, seen_return: arunRow.return_date }]]);
     await expect.poll(() => callNames(page)).toEqual([...LOADED, 'endVacation', 'getRotationSchedule', 'listVacations']);
+    expect(problems).toEqual([]);
+  });
+
+  test('Delete asks first with Keep it focused, sends only the vacation, and a refusal is explained', async ({ page }, testInfo) => {
+    const { problems } = await openApp(page, { as: HARI });
+    await tab(page, 'vacation').click();
+    await card(page, 'Hari').getByRole('button', { name: 'Delete vacation' }).click();
+    const dialog = page.locator('#vacation-dialog');
+    await expect(dialog.getByRole('heading', { name: 'Delete this vacation?' })).toBeVisible();
+    await expect(dialog).toContainText('Your turns in that time count again.');
+    await expect(dialog.getByRole('button', { name: 'Keep it' })).toBeFocused();
+    await shot(page, testInfo, 'vacation-delete');
+    await dialog.getByRole('button', { name: 'Keep it' }).click();
+    await expect(dialog).toBeHidden();
+    expect(await callNames(page), 'keeping it sends nothing').toEqual(LOADED);
+
+    await card(page, 'Hari').getByRole('button', { name: 'Delete vacation' }).click();
+    await dialog.getByRole('button', { name: 'Delete vacation' }).click();
+    await expect(dialog).toBeHidden();
+    await expect(panel(page, 'vacation').locator('.notice-success')).toContainText('Vacation deleted.');
+    expect((await calls(page, 'cancelVacation')).map((call) => call.args)).toEqual([[{ token: 'token-Hari', vacation_id: 'v1' }]]);
+
+    await page.evaluate(() => {
+      window.__mock.responses.cancelVacation = { ok: false, error: { code: 'VACATION_IN_USE', message: 'Secret detail' } };
+    });
+    await card(page, 'Hari').getByRole('button', { name: 'Delete vacation' }).click();
+    await dialog.getByRole('button', { name: 'Delete vacation' }).click();
+    await expect(panel(page, 'vacation').locator('.notice-error')).toHaveText('This vacation already skipped a turn, so it stays on record and can’t be deleted.');
+    await expect(page.locator('body')).not.toContainText('Secret detail');
+    await expectHealthyLayout(page, 'after a refused delete');
     expect(problems).toEqual([]);
   });
 
@@ -401,12 +431,20 @@ test.describe('profile and Beta notice', () => {
 });
 
 test.describe('themes', () => {
-  test('Light, Dark and System apply, persist, and keep the layout healthy', async ({ page }, testInfo) => {
-    const { problems } = await openApp(page);
+  test('a first visit is Dark; Light, Dark and System apply, persist, and keep the layout healthy', async ({ page }, testInfo) => {
     await page.emulateMedia({ colorScheme: 'light' });
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+    const { problems } = await openApp(page);
+    await expect(page.locator('html'), 'Dark even on a light system').toHaveAttribute('data-theme', 'dark');
+    await expect(page.getByRole('button', { name: 'Dark' })).toHaveAttribute('aria-pressed', 'true');
     const background = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+
+    await page.getByRole('button', { name: 'Light' }).click();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
     const lightBackground = await background();
+    await expectHealthyLayout(page, 'light');
+    await shot(page, testInfo, 'schedule-light');
+    await page.reload();
+    await expect(page.locator('html'), 'a saved Light wins over the default').toHaveAttribute('data-theme', 'light');
 
     await page.getByRole('button', { name: 'Dark' }).click();
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
@@ -558,12 +596,13 @@ test.describe('sign in and sessions', () => {
     await expect(page.getByLabel('Username')).toBeFocused();
     await expect(page.locator('#tabs')).toBeHidden();
     await expect(page.locator('#profile-button')).toBeHidden();
-    await expectHealthyAuthLayout(page, 'sign-in');
-    await shot(page, testInfo, 'sign-in-light');
-    await page.locator('#theme-toggle button[data-choice="dark"]').click();
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
     await expectHealthyAuthLayout(page, 'sign-in dark');
     await shot(page, testInfo, 'sign-in-dark');
+    await page.locator('#theme-toggle button[data-choice="light"]').click();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+    await expectHealthyAuthLayout(page, 'sign-in light');
+    await shot(page, testInfo, 'sign-in-light');
     expect(await calls(page)).toEqual([]);
     expect(problems).toEqual([]);
   });
@@ -854,7 +893,7 @@ test.describe('swaps', () => {
     const { problems } = await openApp(page); // Jijo
     await tab(page, 'swaps').click();
     const swaps = panel(page, 'swaps');
-    await expect(swaps).toContainText('Pending requests change nothing');
+    await expect(swaps).toContainText('Nothing changes until they accept');
     await expect(swaps.locator('.account-card')).toHaveCount(1);
     await expect(swaps.locator('.account-card')).toContainText('Hari');
     await expect(swaps.locator('.account-card')).toContainText('You clean');

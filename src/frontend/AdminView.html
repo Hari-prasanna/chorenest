@@ -95,9 +95,9 @@ function renderAdminPanel(view) {
   }
   return '<div class="layout"><div class="vacation-top"><div><h2 class="panel-title">Household</h2>' +
     '<p class="vacation-intro">Roommates and their sign-in. Only admins see this page.</p></div>' +
-    '<button class="button" type="button" data-action="admin-add">Add roommate</button></div>' +
+    '<button class="button" type="button" data-action="admin-add">' + icon('personAdd') + '<span>Add roommate</span></button></div>' +
     (view.notice ? renderNotice(view.notice) : '') + body +
-    '<p class="footnote"><button class="link-button" type="button" data-action="admin-back">Back to the schedule</button></p></div>';
+    '<p class="footnote"><button class="link-button" type="button" data-action="admin-back">' + icon('left') + '<span>Back to the schedule</span></button></p></div>';
 }
 
 function textField(id, label, value, attributes, type) {

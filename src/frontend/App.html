@@ -857,11 +857,10 @@ function confirmEndVacation() {
   });
 }
 
+// Delete: offered only for your own vacation that the server marked as safe to remove (`cancellable`); it asks first.
 function askCancelVacation(vacationId) {
-  const vacation = vacations && vacations.find(function (candidate) {
-    return candidate.vacation_id === vacationId;
-  });
-  if (!vacation || vacationBusy || !viewer || vacation.roommate_id !== viewerId() || !vacation.cancellable) return;
+  const vacation = ownVacation(vacationId, ['upcoming', 'away', 'returned']);
+  if (!vacation || vacationBusy || !vacation.cancellable) return;
   vacationNotice = null;
   renderVacationPanel();
   pendingVacationCancel = vacation;
@@ -875,7 +874,7 @@ function confirmCancelVacation() {
   vacationBusy = true;
   showVacationDialog(renderVacationSaving());
   runVacationCall('cancelVacation', { vacation_id: vacationId }, function (result) {
-    afterVacationChange(result, 'Vacation cancelled.');
+    afterVacationChange(result, 'Vacation deleted.');
   });
 }
 

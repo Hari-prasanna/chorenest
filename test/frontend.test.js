@@ -685,19 +685,25 @@ test('no roommate names or dates are hardcoded in the frontend', () => {
 
 // Theme
 
-test('the theme starts as System and is applied before the page renders', () => {
-  const light = loadFrontend({ as: null });
-  assert.equal(light.themeAtLoad, 'light');
-  assert.deepEqual(light.pressed(), { light: 'false', dark: 'false', system: 'true' });
-  assert.equal(light.storage.size, 0);
+test('a first visit starts in Dark, whatever the system says, and it is applied before the page renders', () => {
+  const first = loadFrontend({ as: null });
+  assert.equal(first.themeAtLoad, 'dark');
+  assert.deepEqual(first.pressed(), { light: 'false', dark: 'true', system: 'false' });
+  assert.equal(first.storage.size, 0, 'the default is not saved: it is only a starting point');
+  first.setSystemDark(true);
+  first.setSystemDark(false);
+  assert.equal(first.theme(), 'dark', 'the default does not follow the system');
 
   assert.equal(loadFrontend({ systemDark: true }).themeAtLoad, 'dark');
+  assert.match(read('Index.html'), /data-choice="dark" aria-pressed="true">Dark</, 'the toggle starts on Dark too');
   const index = read('Index.html');
   assert.ok(index.indexOf("include_('frontend/Theme')") < index.indexOf('<body>'));
 });
 
 test('System follows the operating system, including when it changes', () => {
   const page = loadFrontend();
+  page.chooseTheme('system');
+  assert.equal(page.theme(), 'light');
   page.setSystemDark(true);
   assert.equal(page.theme(), 'dark');
   page.setSystemDark(false);
@@ -737,8 +743,11 @@ test('a saved choice survives a reload, and an invalid saved value is ignored', 
   assert.equal(loadFrontend({ storage: lightOnDarkSystem, systemDark: true }).themeAtLoad, 'light');
 
   const invalid = loadFrontend({ storage: new Map([['chorenest-theme', 'purple']]) });
-  assert.equal(invalid.themeAtLoad, 'light');
-  assert.deepEqual(invalid.pressed(), { light: 'false', dark: 'false', system: 'true' });
+  assert.equal(invalid.themeAtLoad, 'dark', 'an unknown value counts as a first visit');
+  assert.deepEqual(invalid.pressed(), { light: 'false', dark: 'true', system: 'false' });
+
+  const savedSystem = loadFrontend({ storage: new Map([['chorenest-theme', 'system']]), systemDark: false });
+  assert.equal(savedSystem.themeAtLoad, 'light', 'a saved System choice still follows the system');
 });
 
 test('the toggle still works for this visit when browser storage is blocked', () => {
@@ -826,8 +835,8 @@ test('the only buttons are the known ones, and the only navigation is the four-s
   const choices = [...group[1].matchAll(/<button type="button" data-choice="(\w+)" aria-pressed="(\w+)">(\w+)<\/button>/g)];
   assert.deepEqual(choices.map((m) => m.slice(1)), [
     ['light', 'false', 'Light'],
-    ['dark', 'false', 'Dark'],
-    ['system', 'true', 'System'],
+    ['dark', 'true', 'Dark'],
+    ['system', 'false', 'System'],
   ]);
   for (const [file, source] of frontendSources()) {
     for (const [button] of source.matchAll(/<button\b[^>]*>/g)) {
@@ -906,10 +915,14 @@ test('text meets WCAG AA contrast (4.5:1) on its background in both themes', () 
     ['muted', 'bg'], ['muted', 'surface'], ['muted', 'surface-soft'],
     ['accent-text', 'bg'], ['accent-text', 'surface'], ['accent-text', 'accent-soft'], ['neutral-text', 'neutral-bg'],
     ['on-solid', 'solid'], ['on-solid', 'solid-hover'],
-    // Hero card, green and (when overdue) coral, one flat colour each: its text, the hint and the tiles.
+    // Hero card, yellow and (when overdue) coral, one flat colour each: its text, the hint, the tiles and the button.
     ...['hero-bg', 'overdue-bg'].flatMap((background) => [['on-hero', background], ['on-hero-soft', background]]),
     ['hero-tile-text', 'hero-tile'], ['hero-tile-muted', 'hero-tile'],
     ['overdue-tile-text', 'overdue-tile'], ['overdue-tile-muted', 'overdue-tile'],
+    ['on-hero-button', 'hero-button'],
+    // Errors, the delete button and the active tab.
+    ['danger-text', 'danger-bg'], ['danger-text', 'surface'], ['danger-text', 'surface-soft'], ['surface', 'danger-text'],
+    ['tab-active-text', 'tab-active-bg'], ['text', 'surface'],
     ...[1, 2, 3, 4, 5, 6].map((n) => [`tone-${n}-fg`, `tone-${n}-bg`]),
   ];
   for (const [name, theme] of [['light', light], ['dark', dark]]) {
@@ -1140,7 +1153,7 @@ test('the page code holds no identity of its own: no picker, no roommate id in a
 
 // Slice 04D polish
 
-test('the few remaining emojis are decorative and hidden from screen readers, and later turns form a timeline', () => {
+test('no page uses emojis: notes carry hidden line icons, and later turns form a list', () => {
   const page = loadFrontend();
   page.succeed(
     schedule({
@@ -1150,11 +1163,11 @@ test('the few remaining emojis are decorative and hidden from screen readers, an
     })
   );
   const html = page.app.innerHTML;
-  for (const emoji of ['🏖️', '🔄']) assert.match(html, new RegExp(`aria-hidden="true">${emoji}</span>`), emoji); // the swap and away notes
-  assert.doesNotMatch(html, /[🧹✨]/u, 'no decorative emojis');
-
-  const withoutDecoration = html.replace(/<span[^>]*aria-hidden="true"[^>]*>[^<]*<\/span>/g, '');
-  assert.doesNotMatch(withoutDecoration, /\p{Extended_Pictographic}/u, 'every emoji is hidden from screen readers');
+  assert.doesNotMatch(html, /\p{Extended_Pictographic}/u, 'no emojis');
+  const notes = [...html.matchAll(/<p class="note"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">/g)];
+  assert.ok(notes.length >= 3, 'the swap and away notes each start with a hidden icon');
+  for (const [svg] of html.matchAll(/<svg\b[^>]*>/g)) assert.match(svg, /aria-hidden="true" focusable="false"/, svg);
+  for (const [file, source] of frontendSources()) assert.doesNotMatch(source, /\p{Extended_Pictographic}/u, `${file}: no emojis anywhere`);
 
   assert.equal(html.match(/<ol class="timeline">/g).length, 1);
   const names = [...html.matchAll(/<li class="timeline-item">[\s\S]*?class="name">([^<]*)</g)].map((m) => m[1]);
@@ -1367,7 +1380,7 @@ test('compact cards show name, status and Berlin dates; the cleaning impact is f
   ));
   const html = page.panels.vacation.innerHTML;
   const text = panelText(page);
-  assert.match(text, /^Vacations Turns that fall in a vacation are skipped, with no make-up turn\. Plan vacation /);
+  assert.match(text, /^Vacations Away on your weekend\? That turn is skipped, with no make-up turn\. Plan vacation /);
   assert.match(text, /Away now Arun Away now First day away Fri 9 Jan First day back Mon 12 Jan Cleaning impact Sat 17 – Sun 18 Jan · No turn that weekend Sat 6 – Sun 7 Jun · Not scheduled yet/);
   assert.match(text, /Upcoming Jijo Upcoming First day away Fri 9 Jan First day back Mon 12 Jan Cleaning impact · 1 turn skipped Sat 10 – Sun 11 Jan · Turn skipped/);
   assert.match(text, /Recently back Hari Returned First day away Fri 3 Apr First day back Tue 7 Apr Cleaning impact Sat 4 – Sun 5 Apr · Past weekend Kim Returned First day away Sun 29 Mar First day back Wed 1 Apr/, 'latest return first');
@@ -1396,7 +1409,7 @@ test('"Who’s away" shows who is away now and who leaves within two weeks, and 
 });
 
 test('loading, empty, server problem, malformed answer and network failure each have a clear state, and Try again reloads', () => {
-  assert.match(panelText(loadedVacations(vacationList())), /Everyone’s home No vacations are planned\./);
+  assert.match(panelText(loadedVacations(vacationList())), /Everyone’s home No vacations planned\. The dust bunnies are outnumbered\./);
 
   for (const [answer, pattern] of [
     [{ ok: false, error: { code: 'DATABASE_NOT_SET_UP', message: 'Server detail secret' } }, /Couldn’t load vacations Try again in a moment\./],
@@ -1442,25 +1455,37 @@ test('Plan vacation is offered to every signed-in roommate', () => {
   }
 });
 
-test('only your own vacation offers actions: Cancel when allowed, Edit dates while upcoming or away, and I’m back while away', () => {
+test('only your own vacation offers actions: Delete when the server allows it, Edit dates while upcoming or away, and I’m back while away', () => {
   const list = vacationList(
     vacationItem('Hari'),
     vacationItem('Hari', { vacation_id: 'v-used', cancellable: false }),
     vacationItem('Hari', { vacation_id: 'v-away', state: 'away', cancellable: false }),
+    vacationItem('Hari', { vacation_id: 'v-away-free', state: 'away', cancellable: true }),
     vacationItem('Hari', { vacation_id: 'v-back', state: 'returned', cancellable: false }),
-    vacationItem('Hari', { vacation_id: null, state: 'upcoming', cancellable: false }),
+    vacationItem('Hari', { vacation_id: 'v-back-free', state: 'returned', cancellable: true }),
+    vacationItem('Hari', { vacation_id: null, state: 'upcoming', cancellable: true }),
     vacationItem('Jijo'),
-    vacationItem('Jijo', { vacation_id: 'v-jijo-away', state: 'away', cancellable: false })
+    vacationItem('Jijo', { vacation_id: 'v-jijo-away', state: 'away', cancellable: true })
   );
   const page = loadedVacations(list);
   const html = page.panels.vacation.innerHTML;
   const actions = [...html.matchAll(/data-action="(cancel-vacation|edit-vacation|end-vacation)" data-vacation-id="([^"]*)"/g)].map((m) => [m[1], m[2]]);
   assert.deepEqual(actions, [
-    ['edit-vacation', 'v-away'], ['end-vacation', 'v-away'],
-    ['cancel-vacation', 'v-Hari'], ['edit-vacation', 'v-Hari'],
+    ['end-vacation', 'v-away'], ['edit-vacation', 'v-away'],
+    ['end-vacation', 'v-away-free'], ['edit-vacation', 'v-away-free'], ['cancel-vacation', 'v-away-free'],
+    ['edit-vacation', 'v-Hari'], ['cancel-vacation', 'v-Hari'],
     ['edit-vacation', 'v-used'],
-  ], 'nothing for returned vacations, hand-typed rows without an ID, or anyone else');
+    ['cancel-vacation', 'v-back-free'],
+  ], 'Delete only where the server said it is safe; nothing for hand-typed rows without an ID, or anyone else');
+  assert.match(html, /data-action="cancel-vacation" data-vacation-id="v-Hari" aria-label="Delete vacation">/);
   assert.doesNotMatch(html, / disabled/);
+
+  page.panelClick('cancel-vacation', { 'data-vacation-id': 'v-used' });
+  page.panelClick('cancel-vacation', { 'data-vacation-id': 'v-jijo-away' });
+  assert.equal(page.vacationDialog.open, false, 'a vacation the server marked unsafe, or someone else’s, opens nothing');
+  page.panelClick('cancel-vacation', { 'data-vacation-id': 'v-back-free' });
+  assert.match(dialogText(page), /^Delete this vacation\? Hari: .*It leaves the list\. The cleaning history stays as it is\./);
+  page.vacationClick('close-vacation');
 
   page.panelClick('edit-vacation', { 'data-vacation-id': 'v-Jijo' });
   page.panelClick('end-vacation', { 'data-vacation-id': 'v-Hari' });
@@ -1741,11 +1766,11 @@ test('if the answer never arrives or makes no sense, the list is reloaded with a
   }
 });
 
-test('cancelling asks first, sends exactly the roommate and vacation once, then refreshes', () => {
+test('deleting asks first, sends exactly the roommate and vacation once, then refreshes', () => {
   const page = loadedVacations(vacationList(vacationItem('Hari')));
   page.panelClick('cancel-vacation', { 'data-vacation-id': 'v-Hari' });
   assert.equal(page.vacationDialog.open, true);
-  assert.match(dialogText(page), /Cancel this vacation\? Hari: Fri 9 Jan – back Mon 12 Jan\. Your turns in that time will count again\./);
+  assert.match(dialogText(page), /Delete this vacation\? Hari: Fri 9 Jan – back Mon 12 Jan\. Your turns in that time count again\. Delete vacation Keep it/);
   assert.match(page.vacationDialog.innerHTML, /data-action="close-vacation" autofocus>Keep it</, 'the safe choice has focus');
   page.vacationClick('close-vacation');
   assert.equal(page.vacationDialog.open, false);
@@ -1759,12 +1784,13 @@ test('cancelling asks first, sends exactly the roommate and vacation once, then 
   page.succeedCall(2, { ok: true });
   assert.deepEqual(page.calls.slice(3), ['getRotationSchedule', 'listVacations']);
   page.succeedCall(4, vacationList());
-  assert.match(panelText(page), /Vacation cancelled\..*Everyone’s home/);
+  assert.match(panelText(page), /Vacation deleted\..*Everyone’s home/);
 });
 
-test('a cancel that is refused or unconfirmed reloads the list, with the reason in plain words', () => {
+test('a delete that is refused or unconfirmed reloads the list, with the reason in plain words', () => {
   const reasons = {
-    VACATION_IN_USE: /already skipped a turn/, VACATION_STARTED: /has started/, NOT_YOUR_VACATION: /belongs to someone else/, VACATION_NOT_FOUND: /isn’t there any more/, WRITE_FAILED: /Nothing was recorded/,
+    VACATION_IN_USE: /already skipped a turn, so it stays on record and can’t be deleted/, VACATION_DELETE_CONFLICT: /would change the current cleaning turn, so it stays/,
+    NOT_YOUR_VACATION: /belongs to someone else/, VACATION_NOT_FOUND: /isn’t there any more/, WRITE_FAILED: /Nothing was recorded/,
   };
   for (const [code, pattern] of Object.entries(reasons)) {
     const page = loadedVacations(vacationList(vacationItem('Hari')));
@@ -1977,7 +2003,7 @@ test('the navigation is a bottom bar on phones and a row on wide screens, and hi
   const wide = blockAt(css, css.indexOf('@media (min-width: 760px)'));
   assert.match(blockAt(wide, wide.indexOf('.tabs {')), /position: static;/);
   assert.match(css, /\[hidden\]\s*{\s*display: none !important;/);
-  assert.match(css, /padding: 16px 16px 104px;/, 'the bar never covers the end of the page');
+  assert.match(blockAt(css, css.indexOf('  .page {')), /padding: var\(--space-3\) var\(--space-4\) 96px;/, 'the bar never covers the end of the page');
   assert.match(css, /env\(safe-area-inset-bottom\)/);
   assert.match(css, /\.tab\[aria-current="page"\]/);
 });
@@ -1992,12 +2018,12 @@ test('a tap on the icon or label inside a button counts as a tap on the button',
 
   page.tabClick('schedule');
   page.app.listeners.click({ target: inside(button('data-action', 'mark-cleaned')) });
-  assert.equal(page.dialog.open, true, 'the emoji of Mark as cleaned');
+  assert.equal(page.dialog.open, true, 'the icon of Mark as cleaned');
 
   const vacation = loadedVacations(vacationList(vacationItem('Hari')));
   const cancel = { getAttribute: (name) => ({ 'data-action': 'cancel-vacation', 'data-vacation-id': 'v-Hari' })[name] || null };
   vacation.panels.vacation.listeners.click({ target: { getAttribute: () => null, closest: () => cancel } });
-  assert.match(textOf(vacation.vacationDialog.innerHTML), /Cancel this vacation\?/, 'the label of Cancel vacation');
+  assert.match(textOf(vacation.vacationDialog.innerHTML), /Delete this vacation\?/, 'the label of Delete');
 });
 
 test('Schedule and vacations are fetched again only after they have gone stale, and never while saving', () => {
@@ -2249,7 +2275,7 @@ test('History loads the last 14 days on its first visit and shows a read-only ta
   ]));
   const html = page.panels.history.innerHTML;
   const text = historyText(page);
-  assert.match(text, /^History Who cleaned, and which turns were skipped\. Download CSV Last 14 days Last 30 days Last 90 days All time Last 14 days Cleaning weekend Roommate Status Resolved/);
+  assert.match(text, /^History The receipts: who cleaned, and which turns were skipped\. Download CSV Last 14 days Last 30 days Last 90 days All time Last 14 days Cleaning weekend Roommate Status Resolved/);
   assert.match(text, /Sat 10 – Sun 11 Jan Jijo Cleaned Sun 11 Jan, 18:30/);
   assert.match(text, /Sat 3 – Sun 4 Jan Arun Skipped: away Sat 3 Jan, 09:00/);
   assert.match(text, /Sat 27 – Sun 28 Dec Hari Closed by the app owner Swapped turn Mon 5 Jan, 10:00/);
@@ -2457,7 +2483,7 @@ test('the Swaps tab loads with the session, explains that pending requests chang
     swapItem('Arun', 'incoming', { swap_id: 'swap-off', status: 'accepted', not_applied: true }),
   ]));
   const text = swapText(page);
-  assert.match(text, /^Swaps Pending requests change nothing: cleaning stays with whoever it is scheduled for until the other roommate accepts. A swap trades just those two weekends; the rotation order stays the same. Request a swap/);
+  assert.match(text, /^Swaps Trade one cleaning weekend for another\. Nothing changes until they accept, and the rotation order stays put\. Request a swap/);
   assert.ok(text.includes('Asked of you Jijo Waiting for an answer You clean Sat 31 Jan – Sun 1 Feb (Jijo’s turn) Jijo cleans Sat 24 – Sun 25 Jan (your turn) Accept Decline'), text);
   assert.ok(text.includes('You asked Arun Waiting for an answer You clean Sat 31 Jan – Sun 1 Feb (Arun’s turn) Arun cleans Sat 24 – Sun 25 Jan (your turn) Cancel request'), text);
   assert.ok(text.includes('Accepted Jijo Accepted You clean Sat 31 Jan – Sun 1 Feb (Jijo’s turn) Jijo cleans Sat 24 – Sun 25 Jan (your turn) Arun Not in effect'), text);
@@ -2479,7 +2505,7 @@ test('empty, error and nothing-to-swap states are clear, and a failed load can b
   const only = openSwaps(swapList([], [swapTurn('Hari', 1)]));
   assert.doesNotMatch(only.panels.swaps.innerHTML, /swap-request/, 'nobody else has a turn to take');
   const empty = openSwaps();
-  assert.ok(swapText(empty).endsWith('No swaps yet Ask a roommate to trade a cleaning weekend.'));
+  assert.ok(swapText(empty).endsWith('No swaps yet Busy weekend coming up? Ask a roommate to trade.'));
   assert.match(empty.panels.swaps.innerHTML, /data-action="swap-request"/);
 
   const broken = withHari();

@@ -41,10 +41,10 @@ function renderHistoryPager(view) {
   const first = (view.page - 1) * view.pageSize + 1;
   const last = first + view.entries.length - 1;
   return '<div class="pager" role="group" aria-label="History pages">' +
-    '<button class="button button-quiet" type="button" data-action="history-prev"' + (view.page <= 1 ? ' disabled' : '') + '>Previous</button>' +
+    '<button class="button button-quiet button-small" type="button" data-action="history-prev"' + (view.page <= 1 ? ' disabled' : '') + '>' + icon('left') + '<span>Previous</span></button>' +
     '<p class="pager-status">Page ' + escapeHtml(String(view.page)) + ' of ' + escapeHtml(String(view.pages)) + '<span class="history-sub">' +
     escapeHtml(first + '–' + last + ' of ' + view.total) + '</span></p>' +
-    '<button class="button button-quiet" type="button" data-action="history-next"' + (view.page >= view.pages ? ' disabled' : '') + '>Next</button></div>';
+    '<button class="button button-quiet button-small" type="button" data-action="history-next"' + (view.page >= view.pages ? ' disabled' : '') + '><span>Next</span>' + icon('right') + '</button></div>';
 }
 
 function renderHistoryTable(view) {
@@ -75,9 +75,9 @@ function renderHistoryPanel(view) {
   }
   const canDownload = view.status === 'ready' && view.total > 0 && !view.exporting;
   return '<div class="layout"><div class="vacation-top"><div><h2 class="panel-title">History</h2>' +
-    '<p class="vacation-intro">Who cleaned, and which turns were skipped.</p></div>' +
+    '<p class="vacation-intro">The receipts: who cleaned, and which turns were skipped.</p></div>' +
     '<button class="button button-quiet" type="button" data-action="download-history"' + (canDownload ? '' : ' disabled') + '>' +
-    (view.exporting ? 'Preparing…' : 'Download CSV') + '</button></div>' +
+    icon('download') + '<span>' + (view.exporting ? 'Preparing…' : 'Download CSV') + '</span></button></div>' +
     renderHistoryFilters(view) +
     (view.notice ? '<p class="notice notice-' + escapeHtml(view.notice.kind) + '" role="alert">' + escapeHtml(view.notice.text) + '</p>' : '') +
     body + '</div>';

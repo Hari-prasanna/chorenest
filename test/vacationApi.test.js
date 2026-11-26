@@ -249,7 +249,8 @@ test('a cancelled vacation no longer skips anyone', () => {
   assert.equal(schedule(server(cancelled)).current.assignee.roommate_id, ALEX);
 });
 
-test('only your own, not-yet-started, not-yet-used vacation can be cancelled', () => {
+test('only your own vacation can be deleted, and not a started one that decides the current turn', () => {
+  // Alex is away over the open turn's weekend, so Sam cleans it: deleting the vacation would hand it back to Alex.
   const started = stored({ vacation_id: 'v-started', roommate_id: ALEX, start_date: berlinMidnight(1, 5), return_date: berlinMidnight(1, 12) });
   const future = stored({ vacation_id: 'v-future', roommate_id: ALEX });
   const spreadsheet = database([started, future]);
@@ -257,7 +258,9 @@ test('only your own, not-yet-started, not-yet-used vacation can be cancelled', (
   const before = spreadsheet.snapshot();
 
   failed(cancel(project, { roommate_id: SAM, vacation_id: 'v-future' }), 'NOT_YOUR_VACATION');
-  failed(cancel(project, { roommate_id: ALEX, vacation_id: 'v-started' }), 'VACATION_STARTED');
+  failed(cancel(project, { roommate_id: SAM, vacation_id: 'v-started' }), 'NOT_YOUR_VACATION');
+  failed(cancel(project, { roommate_id: ALEX, vacation_id: 'v-started' }), 'VACATION_DELETE_CONFLICT');
+  assert.equal(list(project).vacations.find((v) => v.vacation_id === 'v-started').cancellable, false);
   failed(cancel(project, { roommate_id: ALEX, vacation_id: 'v-missing' }), 'VACATION_NOT_FOUND');
   const { token } = asSignedIn(project, { roommate_id: ALEX });
   for (const request of [null, {}, { token }, { vacation_id: 'v-future' }, { token, vacation_id: 'bad id!' }, { token, vacation_id: 'v-future', role: 'admin' }, { token, vacation_id: 'v-future', roommate_id: ALEX }]) {
@@ -332,11 +335,46 @@ test('the list shows current and planned vacations with affected weekends and th
   assert.deepEqual(result.vacations[2].weekends.map((w) => w.status), ['later'], 'beyond the 20-turn forecast');
 });
 
-test('a vacation that is under way is "away" and cannot be cancelled', () => {
+test('a vacation that is under way is "away", and can be deleted when the current turn stays the same', () => {
+  // Sam is away, but the open turn (10-11 Jan) is Alex's either way.
   const spreadsheet = database([stored({ vacation_id: 'v-now', roommate_id: SAM, start_date: berlinMidnight(1, 5), return_date: berlinMidnight(1, 12), created_at: new Date('2026-01-01T10:00:00Z') })]);
-  const [vacation] = list(server(spreadsheet)).vacations;
-  assert.deepEqual([vacation.state, vacation.cancellable], ['away', false]);
+  const project = server(spreadsheet);
+  const [vacation] = list(project).vacations;
+  assert.deepEqual([vacation.state, vacation.cancellable], ['away', true]);
   assert.deepEqual(vacation.weekends.map((w) => w.due_at), ['2026-01-11T23:00:00.000Z'], 'only weekends still ahead are listed');
+
+  const turnBefore = schedule(project).current;
+  const logsBefore = table(spreadsheet, 'CLEANING_LOGS');
+  assert.deepEqual(cancel(project, { roommate_id: SAM, vacation_id: 'v-now' }), { ok: true });
+  const [row] = vacations(spreadsheet);
+  assert.equal(row.cancelled_at.getTime(), NOW.getTime(), 'soft-deleted: the row stays with a cancelled_at time');
+  assert.deepEqual(list(project).vacations, []);
+  assert.deepEqual(schedule(project).current, turnBefore, 'the current turn is untouched');
+  assert.deepEqual(table(spreadsheet, 'CLEANING_LOGS'), logsBefore, 'no log is written or removed');
+});
+
+test('a finished vacation can be deleted unless it skipped a turn; the recorded skip always stays', () => {
+  const early = new Date('2025-12-01T10:00:00Z');
+  const rows = [
+    stored({ vacation_id: 'v-used', roommate_id: SAM, start_date: berlinMidnight(12, 24, 2025), return_date: berlinMidnight(1, 5), created_at: early }),
+    stored({ vacation_id: 'v-unused', roommate_id: SAM, start_date: berlinMidnight(1, 5), return_date: berlinMidnight(1, 6), created_at: early }),
+  ];
+  const skip = { log_id: 'log-skip', rotation_id: ALEX_SLOT, roommate_id: SAM, due_date: berlinMidnight(1, 5), outcome: 'vacation_skipped', resolved_at: berlinMidnight(1, 5), notes: 'Skipped for vacation v-used', created_at: berlinMidnight(1, 5) };
+  const spreadsheet = database(rows, { CLEANING_LOGS: rowsFor('CLEANING_LOGS', [skip]) });
+  const project = server(spreadsheet);
+  const listed = Object.fromEntries(list(project).vacations.map((v) => [v.vacation_id, [v.state, v.cancellable]]));
+  assert.deepEqual(listed, { 'v-used': ['returned', false], 'v-unused': ['returned', true] });
+
+  const before = spreadsheet.snapshot();
+  failed(cancel(project, { roommate_id: SAM, vacation_id: 'v-used' }), 'VACATION_IN_USE');
+  assert.equal(spreadsheet.snapshot(), before, 'a refused delete changes nothing');
+  const turnBefore = schedule(project).current;
+
+  assert.equal(cancel(project, { roommate_id: SAM, vacation_id: 'v-unused' }).ok, true);
+  assert.deepEqual(table(spreadsheet, 'CLEANING_LOGS').map((log) => [log.log_id, log.notes]), [['log-skip', 'Skipped for vacation v-used']]);
+  assert.deepEqual(list(project).vacations.map((v) => v.vacation_id), ['v-used']);
+  assert.deepEqual(schedule(project).current, turnBefore);
+  assert.deepEqual(project.lock.events.filter((event) => event === 'lock').length, project.lock.events.filter((event) => event === 'unlock').length);
 });
 
 test('a vacation that ended in the last two weeks is "returned", with its past weekends; older ones are hidden', () => {
