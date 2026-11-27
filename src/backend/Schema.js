@@ -2,9 +2,10 @@
 const SCHEMAS = {
   ROOMMATES: {
     idColumn: 'roommate_id',
-    // The last eight columns are authentication fields (see Auth.js). They stay blank until an account is provisioned.
+    // The eight columns after created_at are authentication fields (see Auth.js); they stay blank until an account is
+    // provisioned. The last, avatar, is the roommate's own pick from AVATAR_IDS (blank: the initial is shown).
     columns: ['roommate_id', 'member_code', 'name', 'email', 'telegram_username', 'active', 'welcome_sent_at', 'created_at',
-      'username', 'role', 'password_hash', 'must_change_password', 'session_version', 'failed_logins', 'locked_until', 'password_expires_at'],
+      'username', 'role', 'password_hash', 'must_change_password', 'session_version', 'failed_logins', 'locked_until', 'password_expires_at', 'avatar'],
     required: ['member_code', 'name', 'email', 'active'],
   },
   ROTATION: {
@@ -14,7 +15,8 @@ const SCHEMAS = {
   },
   CLEANING_LOGS: {
     idColumn: 'log_id',
-    columns: ['log_id', 'rotation_id', 'roommate_id', 'swap_id', 'due_date', 'outcome', 'resolved_at', 'completed_at', 'notes', 'created_at'],
+    // photo_file_id: optional, the Drive file of the cleaner's photo (see Photos.js). Rotation and points never read it.
+    columns: ['log_id', 'rotation_id', 'roommate_id', 'swap_id', 'due_date', 'outcome', 'resolved_at', 'completed_at', 'notes', 'created_at', 'photo_file_id'],
     required: ['rotation_id', 'roommate_id', 'due_date', 'outcome', 'resolved_at'],
   },
   SWAPS: {
@@ -30,6 +32,8 @@ const SCHEMAS = {
 };
 
 const CREATED_AT_COLUMN = 'created_at';
+// The bundled avatars. The page draws them (frontend/ScheduleView.html AVATARS); only these IDs can be stored.
+const AVATAR_IDS = ['sun', 'moon', 'bolt', 'flame', 'wave', 'peak', 'star', 'drop'];
 const CLEANING_OUTCOMES = ['completed', 'admin_resolved', 'vacation_skipped'];
 const MEMBER_CODE_PATTERN = /^[A-Z]{3}-\d{3,}$/;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -37,6 +41,8 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // password hashes never start with them, so every stored text is checked.
 const FORMULA_START_PATTERN = /^[=+\-@\t\r]/;
 const TELEGRAM_PATTERN = /^[A-Za-z][A-Za-z0-9_]{4,31}$/;
+// A Drive file or folder ID: letters, digits, - and _ only, so it can never be read as a formula or a path.
+const DRIVE_ID_PATTERN = /^[A-Za-z0-9_-]{10,128}$/;
 
 function getSchema_(sheetName) {
   if (!Object.prototype.hasOwnProperty.call(SCHEMAS, sheetName)) {
@@ -112,6 +118,7 @@ function assertRoommate_(roommate) {
     fail('telegram_username must be 5-32 letters, digits or underscores, without @.');
   }
   if (typeof roommate.active !== 'boolean') fail('active must be true or false.');
+  if (!isBlank_(roommate.avatar) && AVATAR_IDS.indexOf(roommate.avatar) === -1) fail('avatar must be one of the bundled avatars.');
   assertAuthFields_(roommate);
 }
 
@@ -139,6 +146,9 @@ function assertAuthFields_(record) {
 function assertLogOutcome_(log) {
   if (CLEANING_OUTCOMES.indexOf(log.outcome) === -1) {
     throw new Error('CLEANING_LOGS: outcome must be one of ' + CLEANING_OUTCOMES.join(', ') + '.');
+  }
+  if (!isBlank_(log.photo_file_id) && (log.outcome !== 'completed' || !DRIVE_ID_PATTERN.test(String(log.photo_file_id)))) {
+    throw new Error('CLEANING_LOGS: photo_file_id must be a Drive file ID, and only on a completed cleaning.');
   }
   if (log.outcome === 'completed') {
     if (isBlank_(log.completed_at)) throw new Error('CLEANING_LOGS: completed_at is required when outcome is completed.');

@@ -135,6 +135,7 @@ test('each entry has the roommate, the cleaning weekend, the outcome and when it
   assert.deepEqual(completed, {
     log_id: 'log-0', roommate: { roommate_id: ALEX, name: 'Alex Example' }, weekend_starts_at: '2026-02-13T23:00:00.000Z', due_at: '2026-02-15T23:00:00.000Z',
     outcome: 'completed', completed_at: '2026-02-15T18:00:00.000Z', resolved_at: '2026-02-15T18:00:00.000Z', swapped: false,
+    has_photo: false, can_add_photo: false, can_delete_photo: false, // Sam is looking at Alex's cleaning
   });
   assert.equal(skipped.outcome, 'vacation_skipped');
   assert.equal(skipped.completed_at, null);

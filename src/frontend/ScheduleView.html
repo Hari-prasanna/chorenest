@@ -75,6 +75,8 @@ const ICON_PATHS = {
   plus: '<path d="M12 5v14M5 12h14"/>',
   download: '<path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19.5h14"/>',
   edit: '<path d="M4.5 19.5h4l10-10-4-4-10 10v4ZM13 7.5l3.5 3.5"/>',
+  camera: '<path d="M4 8.5A1.5 1.5 0 0 1 5.5 7H8l1.2-2h5.6L16 7h2.5A1.5 1.5 0 0 1 20 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5Z"/><circle cx="12" cy="13" r="3.2"/>',
+  image: '<rect x="3.5" y="5" width="17" height="14" rx="2.5"/><circle cx="9" cy="10.5" r="1.6"/><path d="m4 17 5-4.5 3.5 3L15 13l5 4.5"/>',
   trash: '<path d="M4.5 7h15M10 11v6M14 11v6M6.5 7l.9 12.1a1.5 1.5 0 0 0 1.5 1.4h6.2a1.5 1.5 0 0 0 1.5-1.4L17.5 7M9.5 7V4.5h5V7"/>',
   home: '<path d="M4 11 12 4.5l8 6.5M6 9.5v10h12v-10"/><path d="M10 19.5v-5h4v5"/>',
   person: '<circle cx="12" cy="8.5" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/>',
@@ -83,6 +85,9 @@ const ICON_PATHS = {
   signOut: '<path d="M14.5 4.5h4v15h-4M10 8l-4 4 4 4M6 12h10"/>',
   left: '<path d="m14.5 6-6 6 6 6"/>',
   right: '<path d="m9.5 6 6 6-6 6"/>',
+  trophy: '<path d="M8 4h8v5a4 4 0 0 1-8 0V4ZM8 6H5v1.5A3 3 0 0 0 8 10.5M16 6h3v1.5a3 3 0 0 1-3 3M12 13v4M8.5 20h7M10 17h4"/>',
+  streak: '<path d="M13 3 5 13.5h6L10 21l8-10.5h-6Z"/>',
+  list: '<path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/>',
 };
 
 function icon(name) {
@@ -91,6 +96,41 @@ function icon(name) {
 
 function displayName(person) {
   return person.name || 'Unknown roommate';
+}
+
+// The bundled avatars: a line glyph on one of the six warm tones. The IDs must match AVATAR_IDS in Schema.js (a test
+// checks it). A roommate who has not picked one shows an initial. Nothing is loaded from outside.
+const AVATARS = [
+  { id: 'sun', label: 'Sun', tone: 1, glyph: '<circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4"/>' },
+  { id: 'moon', label: 'Moon', tone: 6, glyph: '<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5Z"/>' },
+  { id: 'bolt', label: 'Bolt', tone: 2, glyph: '<path d="M13 3 5 13.5h6L10 21l8-10.5h-6Z"/>' },
+  { id: 'flame', label: 'Flame', tone: 5, glyph: '<path d="M12 3c.6 3.4 5.5 5.4 5.5 10.5a5.5 5.5 0 0 1-11 0c0-2 .9-3.4 2.1-4.4.2 1.5.9 2.3 1.7 2.7C10.1 8.7 10.3 5.4 12 3Z"/><path d="M12 20.5c-1.5 0-2.5-1-2.5-2.4 0-1.2.8-2 1.5-2.7.2.8.6 1.2 1 1.4.5-.6.6-1.3.5-2 1.3.8 2 1.9 2 3.3 0 1.5-1 2.4-2.5 2.4Z"/>' },
+  { id: 'wave', label: 'Wave', tone: 4, glyph: '<path d="M3 9c3-3 6 3 9 0s6 3 9 0M3 15c3-3 6 3 9 0s6 3 9 0"/>' },
+  { id: 'peak', label: 'Peak', tone: 3, glyph: '<path d="M3 19 9.5 7l4 7 2-3L21 19Z"/>' },
+  { id: 'star', label: 'Star', tone: 1, glyph: '<path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.8l-5.2 2.8 1-5.8L3.5 9.7l5.9-.9Z"/>' },
+  { id: 'drop', label: 'Drop', tone: 4, glyph: '<path d="M12 3.5C8 8.5 6 11.3 6 14.5a6 6 0 0 0 12 0c0-3.2-2-6-6-11Z"/>' },
+];
+
+// Who picked which avatar, from the latest schedule answer (and updated when someone's profile or the own pick changes).
+// Every view draws avatars through this, so a pick shows everywhere at once.
+let avatarDirectory = {};
+
+function avatarSpec(id) {
+  return AVATARS.filter(function (avatar) {
+    return avatar.id === id;
+  })[0] || null;
+}
+
+function setAvatarDirectory(roommates) {
+  avatarDirectory = {};
+  roommates.forEach(function (roommate) {
+    if (avatarSpec(roommate.avatar)) avatarDirectory[roommate.roommate_id] = roommate.avatar;
+  });
+}
+
+function setAvatarFor(roommateId, avatarId) {
+  if (avatarSpec(avatarId)) avatarDirectory[roommateId] = avatarId;
+  else delete avatarDirectory[roommateId];
 }
 
 // A stable colour per roommate, so each person keeps the same avatar everywhere.
@@ -103,6 +143,11 @@ function avatarTone(person) {
 }
 
 function avatar(person, size) {
+  const picked = Object.prototype.hasOwnProperty.call(avatarDirectory, person.roommate_id) ? avatarSpec(avatarDirectory[person.roommate_id]) : null;
+  if (picked) {
+    return '<span class="avatar avatar-' + size + ' tone-' + picked.tone + '" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">' +
+      picked.glyph + '</svg></span>';
+  }
   const initial = Array.from(displayName(person))[0].toUpperCase();
   return '<span class="avatar avatar-' + size + ' tone-' + avatarTone(person) + '" aria-hidden="true">' + escapeHtml(initial) + '</span>';
 }
@@ -112,20 +157,22 @@ function joinNames(names) {
   return names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1];
 }
 
-function renderNote(iconName, text) {
-  return '<p class="note">' + icon(iconName) + '<span>' + escapeHtml(text) + '</span></p>';
+// `inline` notes are spans, for use inside a button (a paragraph is not allowed there).
+function renderNote(iconName, text, inline) {
+  const tag = inline ? 'span' : 'p';
+  return '<' + tag + ' class="note">' + icon(iconName) + '<span>' + escapeHtml(text) + '</span></' + tag + '>';
 }
 
 // At most one swap note and one vacation note per turn, in plain words.
-function turnNotes(turn) {
+function turnNotes(turn, inline) {
   const notes = [];
   if (turn.assignee.roommate_id !== turn.owner.roommate_id) {
-    notes.push(renderNote('swap', 'Covering for ' + displayName(turn.owner) + ' (swap).'));
+    notes.push(renderNote('swap', 'Covering for ' + displayName(turn.owner) + ' (swap).', inline));
   }
   if (turn.vacation_conflict_id) {
-    notes.push(renderNote('luggage', displayName(turn.assignee) + ' is away, so this turn will be skipped.'));
+    notes.push(renderNote('luggage', displayName(turn.assignee) + ' is away, so this turn will be skipped.', inline));
   } else if (turn.skipped.length) {
-    notes.push(renderNote('luggage', joinNames(turn.skipped.map(displayName)) + (turn.skipped.length > 1 ? ' are' : ' is') + ' away.'));
+    notes.push(renderNote('luggage', joinNames(turn.skipped.map(displayName)) + (turn.skipped.length > 1 ? ' are' : ' is') + ' away.', inline));
   }
   return notes.join('');
 }
@@ -235,22 +282,28 @@ function renderCurrentTurn(turn, canMark) {
     '<div id="mark-action">' + renderMarkAction(canMark) + '</div></section>';
 }
 
+/**
+ * "Coming up": one compact card per upcoming turn, each opening that roommate's profile. The same roommate may appear
+ * again on a later weekend. Only the assignee's ID goes in the card; the profile is asked from the server on tap.
+ */
 function renderUpcomingTurns(turns) {
   if (!turns.length) return '';
   const items = turns.map(function (turn, index) {
-    return '<li class="timeline-item">' + avatar(turn.assignee, 'md') +
-      '<div class="timeline-body"><div class="timeline-head"><p class="name">' + escapeHtml(displayName(turn.assignee)) + '</p>' +
-      '<span class="step' + (index === 0 ? ' is-next' : '') + '">' + escapeHtml(STEP_LABELS[index] || 'Later') + '</span></div>' +
-      '<p class="when">' + escapeHtml(formatWeekend(turn)) + '</p>' + turnNotes(turn) + '</div></li>';
+    return '<li><button class="member-card" type="button" data-action="open-member" data-roommate-id="' + escapeHtml(turn.assignee.roommate_id) + '">' +
+      avatar(turn.assignee, 'xl') +
+      '<span class="member-card-body"><span class="member-card-top"><span class="name">' + escapeHtml(displayName(turn.assignee)) + '</span>' +
+      '<span class="step' + (index === 0 ? ' is-next' : '') + '">' + escapeHtml(STEP_LABELS[index] || 'Later') + '</span></span>' +
+      '<span class="when">' + escapeHtml(formatWeekend(turn)) + '</span>' + turnNotes(turn, true) + '</span></button></li>';
   }).join('');
   return '<section class="card upcoming" aria-labelledby="upcoming-title">' +
-    '<h2 class="eyebrow section-title" id="upcoming-title">' + icon('calendar') + 'Coming up</h2><ol class="timeline">' + items + '</ol></section>';
+    '<h2 class="eyebrow section-title" id="upcoming-title">' + icon('calendar') + 'Coming up</h2><ol class="member-grid">' + items + '</ol></section>';
 }
 
 // One current-turn card, then "Who's away" (filled in by the page when vacations arrive) and the turns after it.
-function renderSchedule(schedule, selectedId, notice, away) {
+function renderSchedule(schedule, selectedId, notice, away, prompt) {
   return '<div class="layout">' + (notice ? renderNotice(notice) : '') +
     renderCurrentTurn(schedule.current, markableTurn(schedule, selectedId) !== null) +
+    '<div class="slot" id="photo-prompt-slot">' + (prompt || '') + '</div>' +
     '<div id="away-slot">' + renderAwaySummary(away || { status: 'loading', vacations: [], nowMs: Date.now() }) + '</div>' +
     renderUpcomingTurns(subsequentTurns(schedule)) +
     '<p class="footnote">Updated ' + escapeHtml(formatTimestamp(schedule.generated_at)) + ' · Times in Berlin</p></div>';
@@ -301,8 +354,8 @@ function isValidSchedule(result) {
     Array.isArray(result.roommates) && result.roommates.every(isValidPerson);
 }
 
-function renderResult(result, selectedId, notice, away) {
+function renderResult(result, selectedId, notice, away, prompt) {
   if (result && result.ok === false && result.error) return renderProblem(result.error.code);
-  return isValidSchedule(result) ? renderSchedule(result, selectedId, notice, away) : renderProblem('UNEXPECTED_RESPONSE');
+  return isValidSchedule(result) ? renderSchedule(result, selectedId, notice, away, prompt) : renderProblem('UNEXPECTED_RESPONSE');
 }
 </script>

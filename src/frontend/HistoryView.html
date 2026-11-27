@@ -25,8 +25,17 @@ function renderHistoryRow(entry) {
   return '<tr><th scope="row" class="history-weekend" data-label="Weekend">' + escapeHtml(formatWeekend(entry)) + '</th>' +
     '<td data-label="Roommate"><span class="history-person">' + avatar(entry.roommate, 'sm') + '<span class="name">' + escapeHtml(displayName(entry.roommate)) + '</span></span></td>' +
     '<td data-label="Status"><span class="badge badge-account tone-' + outcome.tone + '">' + escapeHtml(outcome.label) + '</span>' +
-    (entry.swapped ? '<span class="history-sub">Swapped turn</span>' : '') + '</td>' +
+    (entry.swapped ? '<span class="history-sub">Swapped turn</span>' : '') + renderPhotoButtons(entry) + '</td>' +
     '<td data-label="Resolved">' + escapeHtml(formatTimestamp(entry.resolved_at)) + '</td></tr>';
+}
+
+// History and Leaderboard share the tab; this switches between them.
+function renderHistorySections(section) {
+  const option = function (id, label, iconName) {
+    return '<button class="segment" type="button" data-action="history-section" data-section="' + id + '" aria-pressed="' + (id === section ? 'true' : 'false') + '">' +
+      icon(iconName) + '<span>' + label + '</span></button>';
+  };
+  return '<div class="segmented" role="group" aria-label="History sections">' + option('log', 'History', 'list') + option('league', 'Leaderboard', 'trophy') + '</div>';
 }
 
 function renderHistoryFilters(view) {
@@ -55,10 +64,15 @@ function renderHistoryTable(view) {
 }
 
 /**
- * view: { status: 'loading' | 'ready' | 'error' | 'network', range, page, pages, total, pageSize, entries,
- *         exporting, notice: { kind, text } | null }
+ * view: { section: 'log' | 'league', status: 'loading' | 'ready' | 'error' | 'network', range, page, pages, total, pageSize,
+ *         entries, exporting, notice: { kind, text } | null, league: { status, period, data } }
  */
 function renderHistoryPanel(view) {
+  if (view.section === 'league') {
+    return '<div class="layout"><div class="vacation-top"><div><h2 class="panel-title">The Clean League</h2>' +
+      '<p class="vacation-intro">Tidy weekends earn points. Friendly rivalry, zero judgment.</p></div></div>' +
+      renderHistorySections('league') + renderLeagueBody(view.league) + '</div>';
+  }
   let body;
   if (view.status === 'ready' && view.entries.length) {
     body = renderHistoryTable(view);
@@ -78,7 +92,7 @@ function renderHistoryPanel(view) {
     '<p class="vacation-intro">The receipts: who cleaned, and which turns were skipped.</p></div>' +
     '<button class="button button-quiet" type="button" data-action="download-history"' + (canDownload ? '' : ' disabled') + '>' +
     icon('download') + '<span>' + (view.exporting ? 'Preparing…' : 'Download CSV') + '</span></button></div>' +
-    renderHistoryFilters(view) +
+    renderHistorySections('log') + renderHistoryFilters(view) +
     (view.notice ? '<p class="notice notice-' + escapeHtml(view.notice.kind) + '" role="alert">' + escapeHtml(view.notice.text) + '</p>' : '') +
     body + '</div>';
 }

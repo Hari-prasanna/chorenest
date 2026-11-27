@@ -253,11 +253,24 @@ const VACATION_DELETE_EFFECTS = {
   returned: 'It leaves the list. The cleaning history stays as it is.',
 };
 
+/** When deleting would hand the open turn to someone else (as the server worked it out), that change in words, or ''. */
+function renderDeleteTurnChange(vacation) {
+  const change = vacation.delete_changes_turn;
+  const valid = Boolean(change) && Boolean(change.to) && typeof change.to.roommate_id === 'string' && Boolean(change.from) &&
+    !isNaN(Date.parse(change.weekend_starts_at)) && !isNaN(Date.parse(change.due_at));
+  if (!valid) return '';
+  const name = function (person) {
+    return person.roommate_id === vacation.roommate_id ? 'you' : displayName(person);
+  };
+  return '<p class="notice notice-warning" role="note"><strong>The current turn changes.</strong> ' +
+    escapeHtml(formatWeekend(change)) + ' goes to ' + escapeHtml(name(change.to)) + ' instead of ' + escapeHtml(name(change.from)) + '.</p>';
+}
+
 // Deleting asks first; Keep it has the focus. The server checks again that it is still safe.
 function renderVacationCancelConfirm(vacation) {
   return '<div class="dialog-body dialog-scroll"><h2 id="vacation-title">Delete this vacation?</h2>' +
     '<p>' + escapeHtml(vacation.name) + ': ' + escapeHtml(formatVacationDates(vacation)) + '. ' +
-    escapeHtml(VACATION_DELETE_EFFECTS[vacation.state] || VACATION_DELETE_EFFECTS.upcoming) + '</p>' +
+    escapeHtml(VACATION_DELETE_EFFECTS[vacation.state] || VACATION_DELETE_EFFECTS.upcoming) + '</p>' + renderDeleteTurnChange(vacation) +
     '<div class="dialog-actions"><button class="button button-danger-solid" type="button" data-action="confirm-cancel-vacation">Delete vacation</button>' +
     '<button class="button button-quiet" type="button" data-action="close-vacation" autofocus>Keep it</button></div></div>';
 }

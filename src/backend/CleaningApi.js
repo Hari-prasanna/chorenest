@@ -21,7 +21,9 @@ function markCleaned(request) {
     locked = true;
     // The session is checked under the lock, against ROOMMATES as it is now.
     claim.roommateId = sessionOf_(request).roommateId;
-    return { ok: true, completed_at: completeCurrentTurn_(claim).toISOString() };
+    const record = completeCurrentTurn_(claim);
+    // log_id names the new record, so the page can refer to this cleaning afterwards.
+    return { ok: true, completed_at: record.completed_at.toISOString(), log_id: record.log_id };
   } catch (error) {
     return apiError_(error, 'INTERNAL_ERROR');
   } finally {
@@ -78,11 +80,12 @@ function completeCurrentTurn_(claim) {
   };
   if (turn.swap_id) record.swap_id = turn.swap_id;
 
+  let stored;
   try {
-    SheetDb.insert('CLEANING_LOGS', record);
+    stored = SheetDb.insert('CLEANING_LOGS', record);
   } catch (error) {
     console.error(error);
     throw appError_('WRITE_FAILED', 'We couldn’t save that. Nothing was recorded, so you can try again.');
   }
-  return now;
+  return stored;
 }

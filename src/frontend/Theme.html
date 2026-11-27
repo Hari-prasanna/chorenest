@@ -37,6 +37,8 @@ function bindThemeToggle(element) {
   applyTheme();
 }
 
-systemDark.addEventListener('change', applyTheme);
+// A System choice follows the operating system as it changes (older Safari only knows addListener).
+if (systemDark.addEventListener) systemDark.addEventListener('change', applyTheme);
+else if (systemDark.addListener) systemDark.addListener(applyTheme);
 applyTheme();
 </script>

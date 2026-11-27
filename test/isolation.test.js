@@ -52,23 +52,23 @@ test('the browser can call exactly the page and sign-in functions; maintenance l
   // Sign-in, password change and sign-out; then the schedule, cleaning and vacations, each behind a session.
   assert.deepEqual(browserCallable(files), [
     'acceptSwap', 'adminAddRoommate', 'adminChangeRole', 'adminDisableSignIn', 'adminEndSessions', 'adminListAccounts', 'adminProvisionAccount', 'adminResetSignIn',
-    'cancelSwap', 'cancelVacation', 'changePassword', 'declineSwap', 'doGet', 'endVacation', 'exportCleaningHistory', 'getRotationSchedule', 'listCleaningHistory', 'listSwaps', 'listVacations',
-    'markCleaned', 'requestSwap', 'runFridayReminder', 'saveVacation', 'signIn', 'signOut', 'updateVacation',
+    'attachCleaningPhoto', 'cancelSwap', 'cancelVacation', 'changePassword', 'declineSwap', 'deleteCleaningPhoto', 'doGet', 'endVacation', 'exportCleaningHistory', 'getCleaningPhoto', 'getLeaderboard', 'getMemberProfile', 'getRotationSchedule', 'listCleaningHistory', 'listSwaps', 'listVacations',
+    'markCleaned', 'requestSwap', 'runFridayReminder', 'saveVacation', 'setMyAvatar', 'signIn', 'signOut', 'updateVacation',
   ]);
   for (const file of backendFiles()) {
     assert.doesNotMatch(read(`src/backend/${file}`), /^(const|let|var) [A-Za-z0-9]+ = (async )?(function|\()/m, `${file}: functions must be declarations`);
   }
 
   const project = loadProject();
-  for (const helper of ['setupDatabase_', 'diagnoseDatabase_', 'onboardRoommate_', 'resolveOverdueTurn_', 'createAccount_', 'resetAccountPassword_', 'assertMaintenanceAllowed_']) {
+  for (const helper of ['setupDatabase_', 'diagnoseDatabase_', 'onboardRoommate_', 'resolveOverdueTurn_', 'createAccount_', 'resetAccountPassword_', 'setupPhotoFolder_', 'assertMaintenanceAllowed_']) {
     assert.equal(typeof project.get(helper), 'function', helper);
   }
   for (const [file, source] of [...backendFiles().map((f) => [f, read(`src/backend/${f}`)])]) {
     if (file === WRAPPERS) continue;
-    assert.doesNotMatch(source, /^function (setupDatabase|diagnoseDatabase|onboardRoommate|resolveOverdueTurn|createAccount|resetAccountPassword|previewFridayReminder|installFridayReminder|removeFridayReminder)\(/m, `${file}: maintenance entry points must be private`);
+    assert.doesNotMatch(source, /^function (setupDatabase|diagnoseDatabase|onboardRoommate|resolveOverdueTurn|createAccount|resetAccountPassword|previewFridayReminder|installFridayReminder|removeFridayReminder|setupPhotoFolder)\(/m, `${file}: maintenance entry points must be private`);
   }
   for (const file of fs.readdirSync(path.join(ROOT, 'src', 'frontend'))) {
-    assert.doesNotMatch(read(`src/frontend/${file}`), /setupDatabase|diagnoseDatabase|onboardRoommate|resolveOverdueTurn|createAccount|resetAccountPassword|previewFridayReminder|installFridayReminder|removeFridayReminder|runFridayReminder/, `${file}: the page never calls maintenance`);
+    assert.doesNotMatch(read(`src/frontend/${file}`), /setupDatabase|diagnoseDatabase|onboardRoommate|resolveOverdueTurn|createAccount|resetAccountPassword|previewFridayReminder|installFridayReminder|removeFridayReminder|setupPhotoFolder|runFridayReminder/, `${file}: the page never calls maintenance`);
   }
 });
 
@@ -82,12 +82,12 @@ test('the separate admin projects are gone, and there is one web app project per
   assert.doesNotMatch(read('README.md'), /push-admin|admin project|dev-admin|prod-admin/i);
 });
 
-test('the temporary editor wrappers are nine one-line delegations, and only exist while the web app is owner-only', () => {
+test('the temporary editor wrappers are ten one-line delegations, and only exist while the web app is owner-only', () => {
   const file = path.join(ROOT, 'src', 'backend', WRAPPERS);
   if (!fs.existsSync(file)) return; // deleted for release: nothing left to check
   const source = fs.readFileSync(file, 'utf8');
-  assert.deepEqual(browserCallable([WRAPPERS]), ['createAccount', 'diagnoseDatabase', 'installFridayReminder', 'onboardRoommate', 'previewFridayReminder', 'removeFridayReminder', 'resetAccountPassword', 'resolveOverdueTurn', 'setupDatabase']);
-  for (const name of ['setupDatabase', 'diagnoseDatabase', 'onboardRoommate', 'resolveOverdueTurn', 'createAccount', 'resetAccountPassword', 'previewFridayReminder', 'installFridayReminder', 'removeFridayReminder']) {
+  assert.deepEqual(browserCallable([WRAPPERS]), ['createAccount', 'diagnoseDatabase', 'installFridayReminder', 'onboardRoommate', 'previewFridayReminder', 'removeFridayReminder', 'resetAccountPassword', 'resolveOverdueTurn', 'setupDatabase', 'setupPhotoFolder']);
+  for (const name of ['setupDatabase', 'diagnoseDatabase', 'onboardRoommate', 'resolveOverdueTurn', 'createAccount', 'resetAccountPassword', 'previewFridayReminder', 'installFridayReminder', 'removeFridayReminder', 'setupPhotoFolder']) {
     assert.match(source, new RegExp(`function ${name}\\(\\) {\\n  return ${name}_\\(\\);\\n}`), name);
   }
   assert.match(source, /TEMPORARY/);
@@ -102,7 +102,7 @@ test('even while the wrappers exist, a browser caller is refused: closed window,
     const before = spreadsheet.snapshot();
     const project = webApp(spreadsheet, { maintenance: true, ...options });
     if (options.maintenance === false) project.properties.MAINTENANCE_UNTIL = undefined;
-    for (const name of ['setupDatabase', 'diagnoseDatabase', 'onboardRoommate', 'resolveOverdueTurn', 'createAccount', 'resetAccountPassword', 'previewFridayReminder', 'installFridayReminder', 'removeFridayReminder']) assert.throws(() => project.get(name)(), pattern, name);
+    for (const name of ['setupDatabase', 'diagnoseDatabase', 'onboardRoommate', 'resolveOverdueTurn', 'createAccount', 'resetAccountPassword', 'previewFridayReminder', 'installFridayReminder', 'removeFridayReminder', 'setupPhotoFolder']) assert.throws(() => project.get(name)(), pattern, name);
     assert.deepEqual(project.opened, []);
     assert.equal(spreadsheet.snapshot(), before);
   }
@@ -201,8 +201,9 @@ test('the schedule response contains only what the page needs', () => {
   const turnKeys = ['assignee', 'due_at', 'opens_at', 'owner', 'rotation_id', 'skipped', 'swap_id', 'vacation_conflict_id', 'weekend_starts_at'];
   assert.deepEqual(Object.keys(result.current).sort(), [...turnKeys, 'status'].sort());
   for (const turn of result.upcoming) assert.deepEqual(Object.keys(turn).sort(), turnKeys);
-  const people = [result.current.owner, result.current.assignee, ...result.roommates, ...result.upcoming.flatMap((t) => [t.owner, t.assignee, ...t.skipped])];
+  const people = [result.current.owner, result.current.assignee, ...result.upcoming.flatMap((t) => [t.owner, t.assignee, ...t.skipped])];
   for (const person of people) assert.deepEqual(Object.keys(person).sort(), ['name', 'roommate_id']);
+  for (const roommate of result.roommates) assert.deepEqual(Object.keys(roommate).sort(), ['avatar', 'name', 'roommate_id'], 'the household list also carries the chosen avatar ID');
 
   const json = JSON.stringify(result);
   for (const roommate of FIXTURES.ROOMMATES) assert.equal(json.includes(roommate.email) || json.includes(roommate.member_code) || json.includes(roommate.telegram_username || '\u0000'), false);

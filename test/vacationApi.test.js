@@ -249,6 +249,29 @@ test('a cancelled vacation no longer skips anyone', () => {
   assert.equal(schedule(server(cancelled)).current.assignee.roommate_id, ALEX);
 });
 
+test('an upcoming vacation that decides the open turn says who would clean it after a delete; others say nothing', () => {
+  // Alex leaves on Fri 9 Jan, so Sam has the open turn (10-11 Jan). Deleting the vacation hands it back to Alex.
+  const alex = stored({ vacation_id: 'v-alex', roommate_id: ALEX, start_date: berlinMidnight(1, 9), return_date: berlinMidnight(1, 12) });
+  const later = stored({ vacation_id: 'v-later', roommate_id: JO, start_date: berlinMidnight(2, 20), return_date: berlinMidnight(2, 23) });
+  const spreadsheet = database([alex, later]);
+  const project = server(spreadsheet);
+  const before = spreadsheet.snapshot();
+  const listed = Object.fromEntries(list(project).vacations.map((v) => [v.vacation_id, v]));
+  assert.equal(spreadsheet.snapshot(), before, 'working it out writes nothing');
+  assert.deepEqual(listed['v-alex'].delete_changes_turn, {
+    from: { roommate_id: SAM, name: 'Sam Example' },
+    to: { roommate_id: ALEX, name: FIXTURES.ROOMMATES[0].name },
+    weekend_starts_at: berlinMidnight(1, 10).toISOString(),
+    due_at: berlinMidnight(1, 12).toISOString(),
+  });
+  assert.equal(listed['v-later'].delete_changes_turn, null);
+
+  // The rule itself is unchanged: the delete goes through, and the schedule then shows what the page explained.
+  assert.equal(cancel(project, { roommate_id: ALEX, vacation_id: 'v-alex' }).ok, true);
+  assert.equal(schedule(project).current.assignee.roommate_id, ALEX);
+  assert.equal(table(spreadsheet, 'CLEANING_LOGS').length, 0, 'no log is written or reversed');
+});
+
 test('only your own vacation can be deleted, and not a started one that decides the current turn', () => {
   // Alex is away over the open turn's weekend, so Sam cleans it: deleting the vacation would hand it back to Alex.
   const started = stored({ vacation_id: 'v-started', roommate_id: ALEX, start_date: berlinMidnight(1, 5), return_date: berlinMidnight(1, 12) });
@@ -407,7 +430,7 @@ test('a recorded skip is shown as skipped, and the response holds names and date
   const result = plain(raw);
   assert.deepEqual(Object.keys(result).sort(), ['ok', 'vacations']);
   for (const vacation of result.vacations) {
-    assert.deepEqual(Object.keys(vacation).sort(), ['cancellable', 'name', 'return_date', 'roommate_id', 'start_date', 'state', 'vacation_id', 'weekends']);
+    assert.deepEqual(Object.keys(vacation).sort(), ['cancellable', 'delete_changes_turn', 'name', 'return_date', 'roommate_id', 'start_date', 'state', 'vacation_id', 'weekends']);
     for (const weekend of vacation.weekends) assert.deepEqual(Object.keys(weekend).sort(), ['due_at', 'status', 'weekend_starts_at']);
   }
   assert.deepEqual(result.vacations[0].weekends.map((w) => w.status), ['skipped']);

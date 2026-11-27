@@ -225,13 +225,13 @@ test('error responses are browser-safe JSON', () => {
 
 // Roommate picker data
 
-test('lists active roommates by name, with only ids and names', () => {
+test('lists active roommates by name, with only ids, names and avatars', () => {
   const app = devProject(fixtureSpreadsheet());
   const raw = app.get('getRotationSchedule')(asSignedIn(app));
   const result = plain(raw);
-  const expected = FIXTURES.ROOMMATES.map((r) => ({ roommate_id: r.roommate_id, name: r.name })).sort((a, b) => a.name.localeCompare(b.name));
+  const expected = FIXTURES.ROOMMATES.map((r) => ({ roommate_id: r.roommate_id, name: r.name, avatar: null })).sort((a, b) => a.name.localeCompare(b.name));
   assert.deepEqual(result.roommates, expected);
-  for (const roommate of result.roommates) assert.deepEqual(Object.keys(roommate).sort(), ['name', 'roommate_id']);
+  for (const roommate of result.roommates) assert.deepEqual(Object.keys(roommate).sort(), ['avatar', 'name', 'roommate_id']);
   const json = JSON.stringify(raw);
   for (const roommate of FIXTURES.ROOMMATES) assert.equal(json.includes(roommate.email), false);
   assert.deepEqual(JSON.parse(json), result);

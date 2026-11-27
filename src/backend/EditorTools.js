@@ -1,5 +1,5 @@
-// TEMPORARY editor-only wrappers for setup, diagnostics, onboarding, resolving an overdue turn, account provisioning and
-// the reminder trigger.
+// TEMPORARY editor-only wrappers for setup, diagnostics, onboarding, resolving an overdue turn, account provisioning,
+// the reminder trigger and the photo folder.
 // Every top-level function of a web app can be called from the browser, so these are only acceptable while the web
 // app is private to its owner. Delete this file before opening the web app to anyone else: scripts/clasp-env.js
 // refuses to push while it exists unless the manifest access is MYSELF, and never deploys it to PROD (see README,
@@ -39,4 +39,8 @@ function installFridayReminder() {
 
 function removeFridayReminder() {
   return removeFridayReminder_();
+}
+
+function setupPhotoFolder() {
+  return setupPhotoFolder_();
 }
