@@ -55,12 +55,14 @@ async function expectHealthyLayout(page, label) {
       .filter((element) => visible(element) && element.getBoundingClientRect().right > viewport.width + 1 && !inScroller(element))
       .map((element) => element.className || element.tagName);
     const lastBlock = Array.from(document.querySelectorAll('main > div:not([hidden]) > *, main > div:not([hidden]) .layout > *')).filter(visible).pop();
-    window.scrollTo(0, document.body.scrollHeight);
+    const scroller = document.getElementById('scroll');
+    scroller.scrollTo(0, scroller.scrollHeight);
     const last = lastBlock ? box(lastBlock) : null;
     const covered = last && bar.top > 0 && last.bottom > bar.top + 1 && getComputedStyle(document.getElementById('tabs')).position === 'fixed';
-    window.scrollTo(0, 0);
+    scroller.scrollTo(0, 0);
     return {
       overflowX: doc.scrollWidth - doc.clientWidth,
+      overflowY: Math.max(doc.scrollHeight - doc.clientHeight, document.body.scrollHeight - document.body.clientHeight),
       viewport,
       bar,
       barPosition: getComputedStyle(document.getElementById('tabs')).position,
@@ -74,6 +76,7 @@ async function expectHealthyLayout(page, label) {
   });
   const where = `${label} @ ${report.viewport.width}px`;
   expect(report.overflowX, `${where}: horizontal overflow (past right edge: ${report.clipped.join(", ")})`).toBeLessThanOrEqual(0);
+  expect(report.overflowY, `${where}: the document itself never scrolls vertically`).toBeLessThanOrEqual(0);
   expect(report.clipped, `${where}: elements past the right edge`).toEqual([]);
   expect(report.tabsInside, `${where}: section bar inside the viewport`).toBe(true);
   expect(report.tabsApart, `${where}: tabs overlap`).toBe(true);
