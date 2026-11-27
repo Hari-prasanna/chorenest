@@ -30,13 +30,14 @@
           <button class="profile" id="profile-button" type="button" aria-haspopup="dialog" aria-label="Profile" hidden></button>
         </div>
       </header>
-      <section class="auth-screen" id="auth-screen" aria-live="polite"></section>
       <nav class="tabs" id="tabs" aria-label="Sections" hidden>
         <button class="tab" type="button" data-tab="schedule" aria-current="page"><svg class="icon tab-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg><span>Schedule</span></button>
         <button class="tab" type="button" data-tab="vacation" aria-current="false"><svg class="icon tab-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="4" y="7.5" width="16" height="12.5" rx="2.5"/><path d="M9 7.5V5.5a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 15 5.5v2M9 11.5v5M15 11.5v5"/></svg><span>Vacation</span></button>
         <button class="tab" type="button" data-tab="swaps" aria-current="false"><svg class="icon tab-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7 4 3.5 7.5 7 11M3.5 7.5H17M17 13l3.5 3.5L17 20M20.5 16.5H7"/></svg><span>Swaps</span></button>
         <button class="tab" type="button" data-tab="history" aria-current="false"><svg class="icon tab-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1L3.5 8.5"/><path d="M3.5 3.5v5h5M12 7.5V12l3 2"/></svg><span>History</span></button>
       </nav>
+      <div class="scroll" id="scroll">
+      <section class="auth-screen" id="auth-screen" aria-live="polite"></section>
       <aside class="beta-notice" id="beta-notice" aria-label="Beta notice" hidden></aside>
       <main id="main-content" hidden>
         <div id="panel-schedule" data-settled="false">
@@ -48,6 +49,7 @@
         <div id="panel-history" hidden></div>
         <div id="panel-admin" hidden></div>
       </main>
+      </div>
     </div>
     <dialog id="profile-dialog" class="dialog" aria-labelledby="profile-title"></dialog>
     <dialog id="confirm-dialog" class="dialog" aria-labelledby="confirm-title"></dialog>

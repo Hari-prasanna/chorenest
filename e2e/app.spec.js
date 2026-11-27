@@ -1269,3 +1269,102 @@ test.describe('cleaning photos', () => {
     expect(problems).toEqual([]);
   });
 });
+
+test.describe('app shell fits the viewport', () => {
+  const tallHistory = () => {
+    const entry = (n) => ({
+      log_id: 'log-' + n, roommate: { roommate_id: 'id-Jijo', name: 'Jijo' }, weekend_starts_at: new Date(Date.now() - (10 + 7 * n) * 864e5).toISOString(), due_at: new Date(Date.now() - (8 + 7 * n) * 864e5).toISOString(),
+      outcome: 'completed', completed_at: new Date(Date.now() - (9 + 7 * n) * 864e5).toISOString(), resolved_at: new Date(Date.now() - (9 + 7 * n) * 864e5).toISOString(), swapped: false,
+    });
+    return { ok: true, range: '14d', page: 1, page_size: 25, total: 25, pages: 1, entries: Array.from({ length: 25 }, (_, i) => entry(i + 1)) };
+  };
+
+  test('the document never scrolls: the header and the section bar stay put and only the content moves', async ({ page }) => {
+    const { problems } = await openApp(page, { as: HARI, history: tallHistory() });
+    await tab(page, 'history').click();
+    await expect(panel(page, 'history').locator('tbody tr')).toHaveCount(25);
+    const measure = () => page.evaluate(() => {
+      const box = (selector) => {
+        const r = document.querySelector(selector).getBoundingClientRect();
+        return [Math.round(r.top), Math.round(r.bottom)];
+      };
+      const doc = document.documentElement;
+      const scroller = document.getElementById('scroll');
+      return {
+        header: box('.top'), bar: box('#tabs'), top: scroller.scrollTop, canScroll: scroller.scrollHeight > scroller.clientHeight,
+        docScrollable: doc.scrollHeight > doc.clientHeight || document.body.scrollHeight > document.body.clientHeight || doc.scrollWidth > doc.clientWidth,
+        windowY: window.scrollY, body: document.body.getBoundingClientRect().height, viewport: window.innerHeight,
+      };
+    });
+    const before = await measure();
+    expect(before.canScroll, 'the content is taller than the screen').toBe(true);
+    expect(before.docScrollable).toBe(false);
+    expect(Math.abs(before.body - before.viewport), 'the shell is exactly the viewport').toBeLessThanOrEqual(1);
+
+    await page.evaluate(() => {
+      document.getElementById('scroll').scrollTo(0, 400);
+      window.scrollTo(0, 400); // the document itself has nowhere to go
+    });
+    const after = await measure();
+    expect(after.top, 'the content scrolled').toBeGreaterThan(0);
+    expect(after.windowY).toBe(0);
+    expect(after.header, 'the header did not move').toEqual(before.header);
+    expect(after.bar, 'the section bar did not move').toEqual(before.bar);
+    await expectHealthyLayout(page, 'tall history');
+    expect(problems).toEqual([]);
+  });
+
+  test('the root, the body and every theme paint the page colour, so nothing white shows above or behind the app', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'light' });
+    await openApp(page, { as: HARI });
+    const colours = () => page.evaluate(() => {
+      const bg = (element) => getComputedStyle(element).backgroundColor;
+      const token = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+      const probe = document.createElement('i');
+      probe.style.background = token;
+      document.body.appendChild(probe);
+      const expected = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      return { html: bg(document.documentElement), body: bg(document.body), expected, scheme: getComputedStyle(document.documentElement).colorScheme };
+    });
+    for (const [choice, scheme, system] of [['dark', 'dark', 'dark'], ['light', 'light', 'dark'], ['system', 'dark', 'dark'], ['system', 'light', 'light']]) {
+      await page.emulateMedia({ colorScheme: system });
+      await page.locator(`#theme-toggle button[data-choice="${choice}"]`).click();
+      await expect(page.locator('html')).toHaveAttribute('data-theme', scheme);
+      await expect.poll(async () => (await colours()).body, `${choice}/${system}: body (after its short colour transition)`).toBe((await colours()).expected);
+      const seen = await colours();
+      expect(seen.html, `${choice}/${system}: root`).toBe(seen.expected);
+      expect(seen.scheme).toBe(scheme);
+      if (scheme === 'dark') expect(seen.html).not.toBe('rgb(255, 255, 255)');
+    }
+  });
+
+  test('short screens: the content scrolls inside the shell, the sign-in button stays reachable, and tall dialogs scroll inside themselves', async ({ page }) => {
+    await openApp(page, { as: null });
+    await page.setViewportSize({ width: 320, height: 260 }); // roughly what is left above an open keyboard
+    await page.locator('#sign-in-password').focus();
+    await page.locator('.auth-submit').scrollIntoViewIfNeeded();
+    const report = await page.evaluate(() => {
+      const button = document.querySelector('.auth-submit').getBoundingClientRect();
+      const doc = document.documentElement;
+      return { inside: button.top >= 0 && button.bottom <= window.innerHeight, scrollable: doc.scrollHeight > doc.clientHeight, overflowX: doc.scrollWidth - doc.clientWidth, headerTop: document.querySelector('.top').getBoundingClientRect().top };
+    });
+    expect(report.inside, 'the Sign in button can be scrolled into view').toBe(true);
+    expect(report.scrollable, 'the document did not scroll').toBe(false);
+    expect(report.overflowX).toBeLessThanOrEqual(0);
+    expect(report.headerTop).toBeGreaterThanOrEqual(0);
+
+    await openApp(page, { as: HARI });
+    await page.setViewportSize({ width: 320, height: 360 });
+    await tab(page, 'vacation').click();
+    await panel(page, 'vacation').getByRole('button', { name: /Plan vacation/ }).click();
+    const dialog = await page.evaluate(() => {
+      const box = document.getElementById('vacation-dialog').getBoundingClientRect();
+      const inner = document.querySelector('#vacation-dialog .dialog-scroll');
+      return { fits: box.top >= 0 && box.bottom <= window.innerHeight, scrolls: inner.scrollHeight > inner.clientHeight, doc: document.documentElement.scrollHeight > document.documentElement.clientHeight };
+    });
+    expect(dialog.fits, 'the dialog stays inside the screen').toBe(true);
+    expect(dialog.scrolls, 'and scrolls inside itself').toBe(true);
+    expect(dialog.doc).toBe(false);
+  });
+});

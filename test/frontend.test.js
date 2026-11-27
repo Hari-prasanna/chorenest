@@ -2095,7 +2095,9 @@ test('the navigation is a bottom bar on phones and a row on wide screens, and hi
   const wide = blockAt(css, css.indexOf('@media (min-width: 760px)'));
   assert.match(blockAt(wide, wide.indexOf('.tabs {')), /position: static;/);
   assert.match(css, /\[hidden\]\s*{\s*display: none !important;/);
-  assert.match(blockAt(css, css.indexOf('  .page {')), /padding: var\(--space-3\) var\(--space-4\) 96px;/, 'the bar never covers the end of the page');
+  assert.match(blockAt(css, css.indexOf('  .scroll {')), /padding: 0 var\(--gutter\) 96px;/, 'the bar never covers the end of the content');
+  assert.match(blockAt(css, css.indexOf('  html {')), /overflow: hidden;[\s\S]*background: var\(--bg\);/, 'the document does not scroll and the root has the page colour');
+  assert.match(blockAt(css, css.indexOf('  body {')), /height: 100vh;\s*height: 100dvh;\s*overflow: hidden;/, 'the shell fits the visible viewport');
   assert.match(css, /env\(safe-area-inset-bottom\)/);
   assert.match(css, /\.tab\[aria-current="page"\]/);
 });
