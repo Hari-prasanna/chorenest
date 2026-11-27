@@ -45,8 +45,14 @@ async function expectHealthyLayout(page, label) {
     const tabs = Array.from(document.querySelectorAll('.tab')).map(box);
     const bar = box(document.getElementById('tabs'));
     const header = ['.brand', '.top-actions'].map((selector) => box(document.querySelector(selector)));
+    const inScroller = (element) => {
+      for (let parent = element.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
+        if (/auto|scroll/.test(getComputedStyle(parent).overflowX) && parent.getBoundingClientRect().right <= viewport.width + 1) return true;
+      }
+      return false;
+    };
     const clipped = Array.from(document.querySelectorAll('.top *, .tabs *, main *, .beta-notice *'))
-      .filter((element) => visible(element) && element.getBoundingClientRect().right > viewport.width + 1)
+      .filter((element) => visible(element) && element.getBoundingClientRect().right > viewport.width + 1 && !inScroller(element))
       .map((element) => element.className || element.tagName);
     const lastBlock = Array.from(document.querySelectorAll('main > div:not([hidden]) > *, main > div:not([hidden]) .layout > *')).filter(visible).pop();
     window.scrollTo(0, document.body.scrollHeight);

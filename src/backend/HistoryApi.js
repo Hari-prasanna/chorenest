@@ -11,20 +11,21 @@ const HISTORY_CSV_HEADER = ['Weekend start', 'Weekend end', 'Roommate', 'Status'
  * range is '14d' (default), '30d', '90d' or 'all'. A cleaning belongs to a range when its weekend's Sunday (Berlin) is
  * within the last N calendar days, today included. Records are newest weekend first, HISTORY_PAGE_SIZE per page; a
  * page past the end returns the last page. Any signed-in roommate may read it. Each entry: { log_id,
- * roommate: { roommate_id, name }, weekend_starts_at, due_at, outcome, completed_at, resolved_at, swapped }. Notes,
+ * roommate: { roommate_id, name }, weekend_starts_at, due_at, outcome, completed_at, resolved_at, swapped, has_photo,
+ * can_add_photo, can_delete_photo }. Notes,
  * emails and other columns are never sent. Rows that are not well-formed (see RowDiagnostics.js) are left out.
  */
 function listCleaningHistory(request) {
   try {
     const query = historyQuery_(request, true);
     const records = SheetDb.listMany(['ROOMMATES', 'CLEANING_LOGS']);
-    sessionOf_(request, records.ROOMMATES);
+    const session = sessionOf_(request, records.ROOMMATES);
     const names = historyNames_(records);
     const rows = historyRows_(records, query.range, new Date());
     const pages = Math.max(1, Math.ceil(rows.length / HISTORY_PAGE_SIZE));
     const page = Math.min(query.page, pages);
     const entries = rows.slice((page - 1) * HISTORY_PAGE_SIZE, page * HISTORY_PAGE_SIZE).map(function (log) {
-      return historyEntry_(log, names);
+      return Object.assign(historyEntry_(log, names), photoFlags_(log, session));
     });
     return { ok: true, entries: entries, range: query.range, page: page, page_size: HISTORY_PAGE_SIZE, total: rows.length, pages: pages };
   } catch (error) {

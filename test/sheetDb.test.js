@@ -16,7 +16,7 @@ const {
   writableFixture,
 } = require('./support/appsScript');
 
-const ROOMMATE_HEADERS = ['roommate_id', 'member_code', 'name', 'email', 'telegram_username', 'active', 'welcome_sent_at', 'created_at', 'username', 'role', 'password_hash', 'must_change_password', 'session_version', 'failed_logins', 'locked_until', 'password_expires_at'];
+const ROOMMATE_HEADERS = ['roommate_id', 'member_code', 'name', 'email', 'telegram_username', 'active', 'welcome_sent_at', 'created_at', 'username', 'role', 'password_hash', 'must_change_password', 'session_version', 'failed_logins', 'locked_until', 'password_expires_at', 'avatar'];
 
 function devProject(spreadsheets, properties = {}) {
   return loadProject({
@@ -209,9 +209,9 @@ test('setupDatabase appends missing columns without moving existing data', () =>
     sheets: { ROOMMATES: [['name', 'roommate_id'], ['Alex', 'm1']] },
   });
   const summary = plain(devProject([spreadsheet]).get('setupDatabase_')());
-  assert.equal(summary[0], 'ROOMMATES: added member_code, email, telegram_username, active, welcome_sent_at, created_at, username, role, password_hash, must_change_password, session_version, failed_logins, locked_until, password_expires_at');
+  assert.equal(summary[0], 'ROOMMATES: added member_code, email, telegram_username, active, welcome_sent_at, created_at, username, role, password_hash, must_change_password, session_version, failed_logins, locked_until, password_expires_at, avatar');
   assert.deepEqual(spreadsheet.getSheetByName('ROOMMATES').values, [
-    ['name', 'roommate_id', 'member_code', 'email', 'telegram_username', 'active', 'welcome_sent_at', 'created_at', 'username', 'role', 'password_hash', 'must_change_password', 'session_version', 'failed_logins', 'locked_until', 'password_expires_at'],
+    ['name', 'roommate_id', 'member_code', 'email', 'telegram_username', 'active', 'welcome_sent_at', 'created_at', 'username', 'role', 'password_hash', 'must_change_password', 'session_version', 'failed_logins', 'locked_until', 'password_expires_at', 'avatar'],
     ['Alex', 'm1'],
   ]);
 });
@@ -235,7 +235,7 @@ test('setupDatabase changes nothing if any sheet has an unfixable problem', () =
 test('insert assigns a stable ID and created_at and maps by the sheet header order', () => {
   const spreadsheet = new FakeSpreadsheet(DEV_SPREADSHEET_ID, {
     marker: 'DEV',
-    sheets: { ROOMMATES: [['welcome_sent_at', 'email', 'created_at', 'telegram_username', 'active', 'name', 'member_code', 'roommate_id', 'username', 'role', 'password_hash', 'must_change_password', 'session_version', 'failed_logins', 'locked_until', 'password_expires_at']] },
+    sheets: { ROOMMATES: [['welcome_sent_at', 'email', 'created_at', 'telegram_username', 'active', 'name', 'member_code', 'roommate_id', 'username', 'role', 'password_hash', 'must_change_password', 'session_version', 'failed_logins', 'locked_until', 'password_expires_at', 'avatar']] },
   });
   const SheetDb = devProject([spreadsheet]).get('SheetDb');
 
@@ -246,7 +246,7 @@ test('insert assigns a stable ID and created_at and maps by the sheet header ord
   assert.equal(Object.prototype.toString.call(row[2]), '[object Date]');
 
   assert.deepEqual(plain(SheetDb.list('ROOMMATES').map(({ created_at, ...rest }) => rest)), [
-    { welcome_sent_at: '', email: 'alex@example.com', telegram_username: '', active: true, name: 'Alex', member_code: 'ALX-001', roommate_id: stored.roommate_id, username: '', role: '', password_hash: '', must_change_password: '', session_version: '', failed_logins: '', locked_until: '', password_expires_at: '' },
+    { welcome_sent_at: '', email: 'alex@example.com', telegram_username: '', active: true, name: 'Alex', member_code: 'ALX-001', roommate_id: stored.roommate_id, username: '', role: '', password_hash: '', must_change_password: '', session_version: '', failed_logins: '', locked_until: '', password_expires_at: '', avatar: '' },
   ]);
 });
 

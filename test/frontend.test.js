@@ -108,6 +108,35 @@ function loadFrontend({ storage = new Map(), systemDark = false, storageBlocked 
   swapDialog.close = function () {
     this.open = false;
   };
+  const memberDialog = element();
+  memberDialog.open = false;
+  memberDialog.showModal = function () {
+    this.open = true;
+  };
+  memberDialog.close = function () {
+    this.open = false;
+  };
+  const photoDialog = element();
+  photoDialog.open = false;
+  photoDialog.showModal = function () {
+    this.open = true;
+  };
+  photoDialog.close = function () {
+    this.open = false;
+  };
+  const fileInput = () => {
+    const input = element();
+    input.files = [];
+    input.value = '';
+    input.clicks = 0;
+    input.click = function () {
+      this.clicks++;
+    };
+    return input;
+  };
+  const photoCamera = fileInput();
+  const photoGallery = fileInput();
+  const photoSlot = element();
   const swapInputs = {
     'swap-mine': input(),
     'swap-theirs': input(),
@@ -176,7 +205,7 @@ function loadFrontend({ storage = new Map(), systemDark = false, storageBlocked 
       return this;
     },
   };
-  for (const name of ['getRotationSchedule', 'markCleaned', 'listVacations', 'saveVacation', 'cancelVacation', 'updateVacation', 'endVacation', 'signIn', 'changePassword', 'signOut',
+  for (const name of ['getRotationSchedule', 'attachCleaningPhoto', 'getCleaningPhoto', 'deleteCleaningPhoto', 'getLeaderboard', 'getMemberProfile', 'setMyAvatar', 'markCleaned', 'listVacations', 'saveVacation', 'cancelVacation', 'updateVacation', 'endVacation', 'signIn', 'changePassword', 'signOut',
     'listCleaningHistory', 'exportCleaningHistory', 'listSwaps', 'requestSwap', 'acceptSwap', 'declineSwap', 'cancelSwap', 'adminListAccounts', 'adminAddRoommate', 'adminProvisionAccount', 'adminResetSignIn', 'adminDisableSignIn', 'adminEndSessions', 'adminChangeRole']) {
     run[name] = function (...args) {
       calls.push(name);
@@ -201,6 +230,11 @@ function loadFrontend({ storage = new Map(), systemDark = false, storageBlocked 
     'auth-screen': authScreen,
     'admin-dialog': adminDialog,
     'swap-dialog': swapDialog,
+    'member-dialog': memberDialog,
+    'photo-dialog': photoDialog,
+    'photo-camera': photoCamera,
+    'photo-gallery': photoGallery,
+    'photo-prompt-slot': photoSlot,
     ...swapInputs,
     'panel-admin': panels.admin,
     ...adminInputs,
@@ -246,7 +280,10 @@ function loadFrontend({ storage = new Map(), systemDark = false, storageBlocked 
   vm.runInContext(scriptOf('ScheduleView.html'), context);
   vm.runInContext(scriptOf('VacationView.html'), context);
   vm.runInContext(scriptOf('HistoryView.html'), context);
+  vm.runInContext(scriptOf('LeaderboardView.html'), context);
   vm.runInContext(scriptOf('SwapView.html'), context);
+  vm.runInContext(scriptOf('MemberView.html'), context);
+  vm.runInContext(scriptOf('PhotoView.html'), context);
   vm.runInContext(scriptOf('Session.html'), context);
   vm.runInContext(scriptOf('LoginView.html'), context);
   vm.runInContext(scriptOf('AdminView.html'), context);
@@ -270,6 +307,17 @@ function loadFrontend({ storage = new Map(), systemDark = false, storageBlocked 
     adminInputs,
     swapDialog,
     swapInputs,
+    memberDialog,
+    photoDialog,
+    photoCamera,
+    photoGallery,
+    photoSlot,
+    photoClick: (action, attributes = {}) => photoDialog.listeners.click({ target: { getAttribute: (name) => (name === 'data-action' ? action : attributes[name] || null) } }),
+    photoEscape: () => photoDialog.listeners.cancel({ preventDefault() {} }),
+    appClick: (action, attributes = {}) => app.listeners.click({ target: { getAttribute: (name) => (name === 'data-action' ? action : attributes[name] || null) } }),
+    memberClick: (action, attributes = {}) => memberDialog.listeners.click({ target: { getAttribute: (name) => (name === 'data-action' ? action : attributes[name] || null) } }),
+    memberEscape: () => memberDialog.listeners.cancel({ preventDefault() {} }),
+    cardClick: (id) => app.listeners.click({ target: { getAttribute: (name) => ({ 'data-action': 'open-member', 'data-roommate-id': id })[name] || null } }),
     swapPanelClick: (action, attributes = {}) => panels.swaps.listeners.click({ target: { getAttribute: (name) => (name === 'data-action' ? action : attributes[name] || null) } }),
     swapDialogClick: (action) => swapDialog.listeners.click({ target: { getAttribute: (name) => (name === 'data-action' ? action : null) } }),
     swapChange: () => swapDialog.listeners.change({ target: {} }),
@@ -392,12 +440,12 @@ test('shows the current cleaner, task, weekend, due date and status', () => {
 });
 
 /** The names listed under "Coming up", in order. */
-const comingUpNames = (html) => [...html.matchAll(/<li class="timeline-item">[\s\S]*?class="name">([^<]*)</g)].map((m) => m[1]);
+const comingUpNames = (html) => [...html.matchAll(/<li><button class="member-card"[\s\S]*?class="name">([^<]*)</g)].map((m) => m[1]);
 
 test('Coming up shows the next three distinct turns; the same roommate may come round again on a later weekend', () => {
   const page = loadFrontend();
   page.succeed(schedule());
-  const items = page.app.innerHTML.match(/<li class="timeline-item">[\s\S]*?<\/li>/g).map(textOf);
+  const items = page.app.innerHTML.match(/<li><button class="member-card"[\s\S]*?<\/li>/g).map(textOf);
   assert.deepEqual(items, ['Jijo Up next Sat 24 – Sun 25 Jan', 'Arun Then Sat 31 Jan – Sun 1 Feb', 'Hari After that Sat 7 – Sun 8 Feb'], 'Hari cleans now and again in three weeks');
   assert.deepEqual([...page.app.innerHTML.matchAll(/class="avatar avatar-\w+ tone-\d" aria-hidden="true">([^<]*)</g)].map((m) => m[1]), ['H', 'J', 'A', 'H']);
   assert.equal((textOf(page.app.innerHTML).match(/Sat 17 – Sun 18 Jan/g) || []).length, 1, 'the current weekend appears once, in the card');
@@ -447,7 +495,7 @@ test('explains swapped turns and roommates who are away, in one short note each'
   );
   const hero = textOf(page.app.innerHTML.match(/<section class="card hero[\s\S]*?<\/section>/)[0]);
   assert.match(hero, /Covering for Jijo \(swap\)\. Hari is away, so this turn will be skipped\./);
-  assert.equal((page.app.innerHTML.match(/<p class="note">/g) || []).length, 3, 'two in the card, one in Coming up');
+  assert.equal((page.app.innerHTML.match(/class="note">/g) || []).length, 3, 'two in the card, one in Coming up');
   assert.match(textOf(page.app.innerHTML), /Jijo and Kim are away\./);
   assert.doesNotMatch(textOf(page.app.innerHTML), /has been recorded/);
 });
@@ -502,7 +550,7 @@ test('is read-only: no picker or form on the schedule, and only the two read cal
   const page = loadFrontend(); // Jijo, whose turn it is not
   page.succeed(schedule());
   assert.doesNotMatch(page.app.innerHTML, /<(form|input|textarea|select|a )/);
-  assert.equal(page.app.innerHTML.match(/<button[^>]*>/g), null, 'someone else’s turn offers no action');
+  assert.deepEqual(page.app.innerHTML.match(/<button[^>]*>/g).map((b) => b.match(/data-action="([^"]+)"/)[1]), ['open-member', 'open-member', 'open-member'], 'someone else’s turn offers no action; the cards only open profiles');
   assert.deepEqual(page.panels.vacation.innerHTML.match(/<button[^>]*>/g), ['<button class="button" type="button" data-action="plan-vacation">'], 'planning your own vacation is always possible');
   page.clickElsewhere();
   assert.deepEqual(page.calls, LOADED);
@@ -601,7 +649,7 @@ test('renders the real getRotationSchedule() response built from the fixtures', 
   assert.match(text, /Covering for Sam Example \(swap\)\./);
   assert.match(text, /Cleaning weekend Sat 17 – Sun 18 Jan/);
   assert.match(text, /Updated Tue 13 Jan, 13:00 · Times in Berlin/);
-  const upcoming = page.app.innerHTML.match(/<li class="timeline-item">[\s\S]*?<\/li>/g).map((item) => item.match(/class="name">([^<]*)</)[1]);
+  const upcoming = page.app.innerHTML.match(/<li><button class="member-card"[\s\S]*?<\/li>/g).map((item) => item.match(/class="name">([^<]*)</)[1]);
   assert.deepEqual(upcoming, ['Kim Example', 'Alex Example', 'Sam Example'], 'three later turns; Alex comes round again');
   assert.match(text, /Jo Example is away\./);
 });
@@ -623,7 +671,7 @@ test('with the real server and a 3-roommate rotation, Coming up shows three dist
     const result = plain(server.get('getRotationSchedule')(asSignedIn(server)));
     const page = loadFrontend();
     page.succeed(result);
-    const weekends = [...page.app.innerHTML.matchAll(/<p class="when">([^<]*)<\/p>/g)].map((m) => m[1]);
+    const weekends = [...page.app.innerHTML.matchAll(/<span class="when">([^<]*)<\/span>/g)].map((m) => m[1]);
     return { result, html: page.app.innerHTML, names: comingUpNames(page.app.innerHTML), weekends };
   };
 
@@ -661,7 +709,10 @@ test('the page includes only frontend files that exist', () => {
     'frontend/ScheduleView',
     'frontend/VacationView',
     'frontend/HistoryView',
+    'frontend/LeaderboardView',
     'frontend/SwapView',
+    'frontend/MemberView',
+    'frontend/PhotoView',
     'frontend/Session',
     'frontend/LoginView',
     'frontend/AdminView',
@@ -793,7 +844,7 @@ test('each roommate keeps one avatar colour, from a fixed set', () => {
   const inHero = page.app.innerHTML.match(/avatar avatar-lg tone-(\d)/)[1];
   const later = loadFrontend();
   later.succeed(schedule({ current: { ...turn('Jijo', 0), status: 'pending' }, upcoming: [turn('Hari', 1)] }));
-  assert.equal(later.app.innerHTML.match(/avatar avatar-md tone-(\d)" aria-hidden="true">H/)[1], inHero, 'Hari has the same colour in the card and in the list');
+  assert.equal(later.app.innerHTML.match(/avatar avatar-xl tone-(\d)" aria-hidden="true">H/)[1], inHero, 'Hari has the same colour in the hero and in the cards');
 });
 
 test('the hero never hides overdue or vacation information', () => {
@@ -842,7 +893,7 @@ test('the only buttons are the known ones, and the only navigation is the four-s
     for (const [button] of source.matchAll(/<button\b[^>]*>/g)) {
       assert.match(
         button,
-        /data-choice="|data-tab="(schedule|vacation|swaps|history)"|id="profile-button"|class="button auth-submit" type="submit"|data-action="(dismiss-beta|close-profile|sign-out|toggle-password|open-admin|admin-add|admin-retry|admin-back|admin-provision|admin-reset|admin-end-sessions|admin-disable|admin-role|admin-save-add|admin-save-provision|admin-confirm|admin-copy|admin-done|admin-close|retry|mark-cleaned|confirm-clean|cancel-clean|retry-vacations|plan-vacation|save-vacation|close-vacation|cancel-vacation|confirm-cancel-vacation|edit-vacation|end-vacation|save-edit|confirm-end-vacation|retry-history|history-range|history-prev|history-next|download-history|swap-request|swap-retry|swap-accept|swap-decline|swap-cancel|swap-send|swap-confirm|swap-close)"/,
+        /data-choice="|data-tab="(schedule|vacation|swaps|history)"|id="profile-button"|class="button auth-submit" type="submit"|data-action="(dismiss-beta|close-profile|sign-out|toggle-password|open-admin|admin-add|admin-retry|admin-back|admin-provision|admin-reset|admin-end-sessions|admin-disable|admin-role|admin-save-add|admin-save-provision|admin-confirm|admin-copy|admin-done|admin-close|retry|mark-cleaned|confirm-clean|cancel-clean|retry-vacations|plan-vacation|save-vacation|close-vacation|cancel-vacation|confirm-cancel-vacation|edit-vacation|end-vacation|save-edit|confirm-end-vacation|retry-history|view-photo|add-photo|photo-start|photo-dismiss|photo-camera|photo-gallery|photo-upload|photo-discard|photo-close|photo-retry|photo-delete|photo-delete-confirm|photo-keep|member-gallery|history-section|league-period|retry-league|open-member|member-avatar|pick-avatar|member-back|close-member|retry-member|history-range|history-prev|history-next|download-history|swap-request|swap-retry|swap-accept|swap-decline|swap-cancel|swap-send|swap-confirm|swap-close)"/,
         `${file}: ${button}`
       );
     }
@@ -851,7 +902,7 @@ test('the only buttons are the known ones, and the only navigation is the four-s
     assert.equal((source.match(/<nav\b/g) || []).length, file === 'Index.html' ? 1 : 0, file);
     // The only text controls are the vacation dates and the sign-in fields.
     for (const [input] of source.matchAll(/<input\b[^>]*>/g)) {
-      const allowed = (file === 'VacationView.html' && /type="date"/.test(input)) || (file === 'LoginView.html' && /class="text-input"/.test(input)) ||
+      const allowed = (file === 'VacationView.html' && /type="date"/.test(input)) || (file === 'LoginView.html' && /class="text-input"/.test(input)) || (file === 'Index.html' && /type="file"/.test(input)) ||
         (file === 'AdminView.html' && (/class="text-input"/.test(input) || /type="radio" name="admin-role"/.test(input)));
       assert.ok(allowed, `${file}: ${input}`);
     }
@@ -862,7 +913,8 @@ test('the only buttons are the known ones, and the only navigation is the four-s
 
 test('the design uses no external assets or frameworks', () => {
   for (const [file, source] of frontendSources()) {
-    assert.doesNotMatch(source, /https?:|url\(|@import|<link|<img|<iframe|<script src|\bsrc=/, file);
+    // Photos are the one place images appear: PhotoView draws only data: URIs built from our own bytes (see safePhotoSrc).
+    assert.doesNotMatch(source, file === 'PhotoView.html' ? /https?:|url\(|@import|<link|<iframe|<script src|blob:/ : /https?:|url\(|@import|<link|<img|<iframe|<script src|\bsrc=/, file);
   }
 });
 
@@ -921,8 +973,9 @@ test('text meets WCAG AA contrast (4.5:1) on its background in both themes', () 
     ['overdue-tile-text', 'overdue-tile'], ['overdue-tile-muted', 'overdue-tile'],
     ['on-hero-button', 'hero-button'],
     // Errors, the delete button and the active tab.
-    ['danger-text', 'danger-bg'], ['danger-text', 'surface'], ['danger-text', 'surface-soft'], ['surface', 'danger-text'],
-    ['tab-active-text', 'tab-active-bg'], ['text', 'surface'],
+    ['danger-text', 'danger-bg'], ['danger-text', 'surface'], ['danger-text', 'surface-soft'], ['on-danger-solid', 'danger-solid'],
+    ['success-text', 'success-bg'], ['warning-text', 'warning-bg'],
+    ['tab-active-text', 'tab-active-bg'], ['text', 'surface-raised'], ['muted', 'surface-raised'], ['text', 'input-bg'], ['text', 'hover-bg'],
     ...[1, 2, 3, 4, 5, 6].map((n) => [`tone-${n}-fg`, `tone-${n}-bg`]),
   ];
   for (const [name, theme] of [['light', light], ['dark', dark]]) {
@@ -930,6 +983,30 @@ test('text meets WCAG AA contrast (4.5:1) on its background in both themes', () 
       assert.ok(theme[foreground] && theme[background], `${name}: missing ${foreground} or ${background}`);
       const ratio = contrast(theme[foreground], theme[background]);
       assert.ok(ratio >= 4.5, `${name}: ${foreground} on ${background} is ${ratio.toFixed(2)}:1`);
+    }
+  }
+});
+
+test('one brand in both themes: yellow primary actions with black text, and no green, blue or purple outside "success"', () => {
+  const css = read('Styles.html');
+  const light = tokensOf(blockAt(css, css.indexOf(':root {')));
+  const dark = { ...light, ...tokensOf(blockAt(css, css.indexOf(':root[data-theme="dark"]'))) };
+  const hueOf = (value) => {
+    const [r, g, b] = channels(value);
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const chroma = max - min;
+    if (chroma < 0.08) return null; // a neutral grey
+    const hue = max === r ? ((g - b) / chroma) % 6 : max === g ? (b - r) / chroma + 2 : (r - g) / chroma + 4;
+    return (hue * 60 + 360) % 360;
+  };
+  for (const [name, theme] of [['light', light], ['dark', dark]]) {
+    assert.equal(theme.solid, '#f5c542', `${name}: primary actions are the brand yellow`);
+    assert.ok(luminance(theme['on-solid']) < 0.02, `${name}: with black text`);
+    for (const [token, value] of Object.entries(theme)) {
+      const hue = hueOf(value);
+      if (token.startsWith('success-') || hue === null) continue;
+      assert.ok(hue < 75 || hue > 330, `${name}: --${token} ${value} has hue ${Math.round(hue)}°`);
     }
   }
 });
@@ -1164,15 +1241,14 @@ test('no page uses emojis: notes carry hidden line icons, and later turns form a
   );
   const html = page.app.innerHTML;
   assert.doesNotMatch(html, /\p{Extended_Pictographic}/u, 'no emojis');
-  const notes = [...html.matchAll(/<p class="note"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">/g)];
+  const notes = [...html.matchAll(/<(?:p|span) class="note"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">/g)];
   assert.ok(notes.length >= 3, 'the swap and away notes each start with a hidden icon');
   for (const [svg] of html.matchAll(/<svg\b[^>]*>/g)) assert.match(svg, /aria-hidden="true" focusable="false"/, svg);
   for (const [file, source] of frontendSources()) assert.doesNotMatch(source, /\p{Extended_Pictographic}/u, `${file}: no emojis anywhere`);
 
-  assert.equal(html.match(/<ol class="timeline">/g).length, 1);
-  const names = [...html.matchAll(/<li class="timeline-item">[\s\S]*?class="name">([^<]*)</g)].map((m) => m[1]);
-  assert.deepEqual(names, ['Arun', 'Kim', 'Hari']);
-  assert.doesNotMatch(html, /turn-card/);
+  assert.equal(html.match(/<ol class="member-grid">/g).length, 1);
+  assert.deepEqual(comingUpNames(html), ['Arun', 'Kim', 'Hari']);
+  assert.doesNotMatch(html, /turn-card|timeline/);
 
   const overdue = loadFrontend();
   overdue.succeed(schedule({ current: { status: 'overdue' } }));
@@ -1787,6 +1863,22 @@ test('deleting asks first, sends exactly the roommate and vacation once, then re
   assert.match(panelText(page), /Vacation deleted\..*Everyone’s home/);
 });
 
+test('when deleting would hand the current turn to someone else, the confirmation says so first', () => {
+  const change = { from: { roommate_id: 'id-Jijo', name: 'Jijo' }, to: { roommate_id: 'id-Hari', name: 'Hari' }, weekend_starts_at: '2026-01-09T23:00:00.000Z', due_at: '2026-01-11T23:00:00.000Z' };
+  const page = loadedVacations(vacationList(vacationItem('Hari', { delete_changes_turn: change })));
+  page.panelClick('cancel-vacation', { 'data-vacation-id': 'v-Hari' });
+  assert.match(dialogText(page), /count again\. The current turn changes\. Sat 10 – Sun 11 Jan goes to you instead of Jijo\. Delete vacation Keep it$/);
+  assert.match(page.vacationDialog.innerHTML, /<p class="notice notice-warning" role="note">/);
+  assert.deepEqual(page.calls, LOADED, 'explaining asks the server nothing');
+
+  for (const odd of [null, { to: { name: '<b>x</b>' } }, { ...change, due_at: 'soon' }]) {
+    const other = loadedVacations(vacationList(vacationItem('Hari', { delete_changes_turn: odd })));
+    other.panelClick('cancel-vacation', { 'data-vacation-id': 'v-Hari' });
+    assert.doesNotMatch(dialogText(other), /current turn changes/, JSON.stringify(odd));
+    assert.doesNotMatch(other.vacationDialog.innerHTML, /<b>/);
+  }
+});
+
 test('a delete that is refused or unconfirmed reloads the list, with the reason in plain words', () => {
   const reasons = {
     VACATION_IN_USE: /already skipped a turn, so it stays on record and can’t be deleted/, VACATION_DELETE_CONFLICT: /would change the current cleaning turn, so it stays/,
@@ -1966,7 +2058,7 @@ test('the profile dialog shows who is signed in and offers Sign out and Close', 
   page.succeed(schedule());
   page.openProfile();
   assert.equal(page.profileDialog.open, true);
-  assert.equal(textOf(page.profileDialog.innerHTML), 'Profile Hari Admin · Signed in Manage household Signing out ends your session on all your devices. Sign out Close');
+  assert.equal(textOf(page.profileDialog.innerHTML), 'Profile Hari Admin · Signed in My profile and avatar Manage household Signing out ends your session on all your devices. Sign out Close');
   const roommate = loadFrontend({ as: 'Jijo' });
   roommate.succeed(schedule());
   roommate.openProfile();
@@ -2275,7 +2367,7 @@ test('History loads the last 14 days on its first visit and shows a read-only ta
   ]));
   const html = page.panels.history.innerHTML;
   const text = historyText(page);
-  assert.match(text, /^History The receipts: who cleaned, and which turns were skipped\. Download CSV Last 14 days Last 30 days Last 90 days All time Last 14 days Cleaning weekend Roommate Status Resolved/);
+  assert.match(text, /^History The receipts: who cleaned, and which turns were skipped\. Download CSV History Leaderboard Last 14 days Last 30 days Last 90 days All time Last 14 days Cleaning weekend Roommate Status Resolved/);
   assert.match(text, /Sat 10 – Sun 11 Jan Jijo Cleaned Sun 11 Jan, 18:30/);
   assert.match(text, /Sat 3 – Sun 4 Jan Arun Skipped: away Sat 3 Jan, 09:00/);
   assert.match(text, /Sat 27 – Sun 28 Dec Hari Closed by the app owner Swapped turn Mon 5 Jan, 10:00/);
@@ -2298,7 +2390,7 @@ test('choosing a range asks the server for page 1 of that range, and the chosen 
   page.historyClick('history-range', { 'data-range': '90d' });
   assert.deepEqual(historyArgs(page), { token: 'token-Hari', range: '90d', page: 1 });
   assert.match(page.panels.history.innerHTML, /aria-pressed="true">Last 90 days/);
-  assert.equal((page.panels.history.innerHTML.match(/aria-pressed="true"/g) || []).length, 1);
+  assert.equal((page.panels.history.innerHTML.match(/aria-pressed="true"/g) || []).length, 2, 'the range and the History section');
   page.succeed(historyList([historyEntry('Jijo', 1)], { range: '90d' }));
 
   const before = page.calls.length;
@@ -2654,4 +2746,727 @@ test('names in the Swaps tab are escaped, and the requests never carry a roommat
   page.swapInputs['swap-theirs'].value = turn('<b>Eve</b>', 2).due_at;
   page.swapDialogClick('swap-send');
   assert.equal(Object.keys(page.callArguments[page.calls.length - 1][0]).sort().join(), 'partner_id,their_due_at,token,your_due_at');
+});
+
+// Member cards, profiles and avatars
+
+const memberResult = (name, extra = {}) => ({
+  ok: true,
+  member: { roommate_id: `id-${name}`, name, avatar: null, is_you: false },
+  stats: { completed: 12, on_time: 11, on_time_percent: 92 },
+  recent: [{ weekend_starts_at: '2026-01-09T23:00:00.000Z', due_at: '2026-01-11T23:00:00.000Z', outcome: 'completed', completed_at: '2026-01-10T18:30:00.000Z', resolved_at: '2026-01-10T18:30:00.000Z', swapped: false }],
+  next: { weekend_starts_at: turn('Jijo', 1).weekend_starts_at, due_at: turn('Jijo', 1).due_at, current: false, covering: null },
+  ...extra,
+});
+const memberText = (page) => textOf(page.memberDialog.innerHTML);
+const own = (name = 'Hari', extra = {}) => memberResult(name, { member: { roommate_id: `id-${name}`, name, avatar: null, is_you: true }, ...extra });
+
+test('a Coming up card is a button that opens that roommate’s profile: one read, with the statistics from the server', () => {
+  const page = withHari();
+  page.cardClick('id-Jijo');
+  assert.equal(page.memberDialog.open, true);
+  assert.match(memberText(page), /^Jijo/, 'the name shows while loading');
+  assert.deepEqual(page.calls, [...LOADED, 'getMemberProfile']);
+  assert.deepEqual(plain(page.callArguments[2]), [{ token: 'token-Hari', roommate_id: 'id-Jijo' }]);
+
+  page.succeedCall(2, memberResult('Jijo'));
+  const text = memberText(page);
+  assert.match(text, /^Jijo Cleanings done 12 12 turns On time 92% 11 of 12 by the deadline Next turn Sat 24 – Sun 25 Jan Coming up Recent cleanings Sat 10 – Sun 11 Jan Cleaned Close$/);
+  assert.doesNotMatch(page.memberDialog.innerHTML, /member-avatar|pick-avatar|Change avatar/, 'nobody else’s avatar can be changed');
+  assert.match(page.memberDialog.innerHTML, /data-action="close-member" autofocus/);
+
+  page.memberClick('close-member');
+  assert.equal(page.memberDialog.open, false);
+  page.cardClick('id-Nobody');
+  assert.equal(page.memberDialog.open, false, 'someone outside the household list opens nothing');
+  assert.deepEqual(page.calls, [...LOADED, 'getMemberProfile']);
+});
+
+test('the profile says what it can when there is nothing to show yet, and escapes names', () => {
+  const page = withHari(schedule({ roommates: [person('Arun'), person('Hari'), person('<b>Jijo</b>', 'id-Jijo')] }));
+  page.cardClick('id-Jijo');
+  page.succeedCall(2, memberResult('<b>Jijo</b>', { member: { roommate_id: 'id-Jijo', name: '<b>Jijo</b>', avatar: null, is_you: false }, stats: { completed: 0, on_time: 0, on_time_percent: null }, recent: [], next: null }));
+  assert.doesNotMatch(page.memberDialog.innerHTML, /<b>/);
+  assert.match(memberText(page), /Cleanings done 0 0 turns On time – No cleanings yet Next turn – Nothing in the coming months Recent cleanings No cleanings on record yet\./);
+
+  const swap = withHari();
+  swap.cardClick('id-Jijo');
+  swap.succeedCall(2, memberResult('Jijo', { next: { weekend_starts_at: turn('Jijo', 1).weekend_starts_at, due_at: turn('Jijo', 1).due_at, current: true, covering: { roommate_id: 'id-Arun', name: 'Arun' } } }));
+  assert.match(memberText(swap), /Covering for Arun \(swap\)/);
+});
+
+test('a profile that cannot be loaded or makes no sense says so, retries, and ignores late or foreign answers', () => {
+  for (const answer of ['network', failure('INTERNAL_ERROR'), { ok: true }, memberResult('Arun'), undefined]) {
+    const page = withHari();
+    page.cardClick('id-Jijo');
+    if (answer === 'network') page.failCall(2);
+    else page.succeedCall(2, answer);
+    assert.match(memberText(page), /Couldn’t load this profile/);
+    assert.doesNotMatch(page.memberDialog.innerHTML, /INTERNAL|Server detail/);
+    page.memberClick('retry-member');
+    assert.deepEqual(page.calls, [...LOADED, 'getMemberProfile', 'getMemberProfile']);
+    page.succeedCall(3, memberResult('Jijo'));
+    assert.match(memberText(page), /Cleanings done 12/);
+  }
+
+  const closed = withHari();
+  closed.cardClick('id-Jijo');
+  closed.memberEscape();
+  assert.equal(closed.memberDialog.open, false);
+  closed.succeedCall(2, memberResult('Jijo'));
+  assert.equal(closed.memberDialog.open, false, 'an answer after closing does not reopen it');
+  assert.equal(closed.memberDialog.innerHTML, '');
+
+  const out = withHari();
+  out.cardClick('id-Jijo');
+  out.succeedCall(2, failure('UNAUTHENTICATED'));
+  assert.equal(out.signedIn(), false, 'an ended session goes back to sign-in');
+  assert.equal(out.memberDialog.innerHTML, '');
+});
+
+test('only your own profile offers the avatar picker; a pick sends just the avatar, once, and shows everywhere', () => {
+  const page = withHari();
+  page.cardClick('id-Hari');
+  page.succeedCall(2, own());
+  assert.match(memberText(page), /^Hari You /);
+  assert.match(page.memberDialog.innerHTML, /data-action="member-avatar"/);
+
+  page.memberClick('member-avatar');
+  const picker = page.memberDialog.innerHTML;
+  assert.deepEqual([...picker.matchAll(/data-avatar="([a-z]*)"/g)].map((m) => m[1]), ['sun', 'moon', 'bolt', 'flame', 'wave', 'peak', 'star', 'drop', '']);
+  assert.equal((picker.match(/aria-pressed="true"/g) || []).length, 1, 'the current choice (the initial) is marked');
+  assert.match(textOf(picker), /^Choose your avatar /);
+  assert.doesNotMatch(picker, /\p{Extended_Pictographic}/u);
+
+  page.memberClick('pick-avatar', { 'data-avatar': 'bogus' });
+  page.memberClick('pick-avatar', { 'data-avatar': 'flame' });
+  page.memberClick('pick-avatar', { 'data-avatar': 'moon' });
+  assert.deepEqual(page.calls, [...LOADED, 'getMemberProfile', 'setMyAvatar'], 'one request, however often it is clicked');
+  assert.deepEqual(plain(page.callArguments[3]), [{ token: 'token-Hari', avatar: 'flame' }], 'no roommate in the request');
+  assert.match(page.memberDialog.innerHTML, /data-avatar="flame" aria-pressed="false" disabled>/);
+
+  page.succeedCall(3, { ok: true, avatar: 'flame' });
+  assert.match(memberText(page), /^Hari You Avatar updated\./);
+  assert.match(page.memberDialog.innerHTML, /avatar avatar-lg tone-5" aria-hidden="true"><svg/, 'the profile shows it');
+  assert.match(page.app.innerHTML, /avatar avatar-lg tone-5" aria-hidden="true"><svg/, 'and so does the current-turn card');
+  assert.match(page.profileButton.innerHTML, /avatar avatar-sm tone-5" aria-hidden="true"><svg/, 'and the profile entry');
+  assert.deepEqual(page.calls, [...LOADED, 'getMemberProfile', 'setMyAvatar'], 'redrawing asks the server nothing');
+
+  page.memberClick('member-avatar');
+  assert.equal((page.memberDialog.innerHTML.match(/aria-pressed="true"/g) || []).length, 1);
+  page.memberDialog.listeners.click({ target: { getAttribute: (name) => ({ 'data-action': 'pick-avatar', 'data-avatar': '' })[name] ?? null } }); // a real attribute value of ''
+  assert.deepEqual(plain(page.callArguments[4]), [{ token: 'token-Hari', avatar: null }], 'Initial clears it');
+  page.succeedCall(4, { ok: true, avatar: null });
+  assert.match(page.app.innerHTML, /avatar avatar-lg tone-\d" aria-hidden="true">H</);
+});
+
+test('nobody can pick an avatar from someone else’s profile, and a failed save changes nothing', () => {
+  const page = withHari();
+  page.cardClick('id-Jijo');
+  page.succeedCall(2, memberResult('Jijo'));
+  page.memberClick('member-avatar');
+  page.memberClick('pick-avatar', { 'data-avatar': 'sun' });
+  assert.deepEqual(page.calls, [...LOADED, 'getMemberProfile']);
+  assert.doesNotMatch(page.memberDialog.innerHTML, /avatar-choice/);
+
+  for (const [answer, pattern] of [[failure('BUSY'), /Someone else is saving right now/], [failure('WRITE_FAILED'), /Nothing changed/], ['network', /Nothing changed/], [undefined, /Nothing changed/]]) {
+    const mine = withHari();
+    mine.cardClick('id-Hari');
+    mine.succeedCall(2, own());
+    mine.memberClick('member-avatar');
+    mine.memberClick('pick-avatar', { 'data-avatar': 'sun' });
+    if (answer === 'network') mine.failCall(3);
+    else mine.succeedCall(3, answer);
+    assert.match(textOf(mine.memberDialog.innerHTML), pattern);
+    assert.match(mine.memberDialog.innerHTML, /role="alert"/);
+    assert.doesNotMatch(mine.memberDialog.innerHTML, /Server detail/);
+    assert.doesNotMatch(mine.app.innerHTML, /avatar avatar-lg tone-\d" aria-hidden="true"><svg/, 'nothing changed on the page');
+    assert.doesNotMatch(mine.memberDialog.innerHTML, / disabled/, 'the picker is usable again');
+  }
+});
+
+test('avatars from the schedule are drawn everywhere a person shows, and an unknown one falls back to the initial', () => {
+  const roommates = [{ ...person('Arun'), avatar: 'wave' }, { ...person('Hari'), avatar: 'sun' }, { ...person('Jijo'), avatar: 'not-bundled' }];
+  const page = withHari(schedule({ roommates }));
+  const cards = page.app.innerHTML.match(/<li><button class="member-card"[\s\S]*?<\/li>/g);
+  assert.match(cards[0], /avatar-xl tone-\d" aria-hidden="true">J</, 'an unknown avatar shows the initial');
+  assert.match(cards[1], /avatar-xl tone-4" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 9c3-3/, 'Arun’s wave');
+  assert.match(page.app.innerHTML, /avatar avatar-lg tone-1" aria-hidden="true"><svg/, 'Hari in the current-turn card');
+  assert.match(textOf(page.app.innerHTML), /Jijo Up next/, 'the text never depends on the picture');
+  assert.doesNotMatch(page.app.innerHTML, /\p{Extended_Pictographic}/u);
+
+  page.succeedCall(1, vacationList(vacationItem('Arun')));
+  assert.match(page.panels.vacation.innerHTML, /avatar avatar-sm tone-4" aria-hidden="true"><svg/, 'the vacation list uses it too');
+});
+
+test('Profile offers a way to your own profile, and signing out forgets every avatar and profile', () => {
+  const page = withHari(schedule({ roommates: [{ ...person('Arun'), avatar: 'moon' }, { ...person('Hari'), avatar: 'sun' }, person('Jijo')] }));
+  page.openProfile();
+  assert.match(page.profileDialog.innerHTML, /data-action="open-member" data-roommate-id="id-Hari"/);
+  page.profileDialog.listeners.click({ target: { getAttribute: (name) => ({ 'data-action': 'open-member', 'data-roommate-id': 'id-Hari' })[name] || null } });
+  assert.equal(page.profileDialog.open, false);
+  assert.equal(page.memberDialog.open, true);
+  assert.deepEqual(page.calls, [...LOADED, 'getMemberProfile']);
+
+  page.succeedCall(2, own('Hari', { member: { roommate_id: 'id-Hari', name: 'Hari', avatar: 'sun', is_you: true } }));
+  page.memberClick('close-member');
+  page.openProfile();
+  page.profileClick('sign-out');
+  assert.equal(page.memberDialog.innerHTML, '');
+  assert.equal(page.signedIn(), false);
+  assert.equal(page.view('Object.keys(avatarDirectory).length'), 0, 'the next person sees none of them');
+});
+
+test('the page draws eight different avatars with no colour of their own', () => {
+  const page = loadFrontend();
+  const avatars = page.view('AVATARS');
+  assert.equal(avatars.length, 8);
+  assert.equal(new Set(avatars.map((a) => a.id)).size, 8);
+  assert.equal(new Set(avatars.map((a) => a.glyph)).size, 8, 'each one looks different');
+  for (const { glyph, tone } of avatars) {
+    assert.doesNotMatch(glyph, /fill=|stroke=|style=|#|url\(|href|<image|<script/, 'drawn in the text colour of the tone');
+    assert.ok(tone >= 1 && tone <= 6);
+  }
+});
+
+// The Clean League (Leaderboard section of History)
+
+const leagueEntry = (name, points, rank, extra = {}) => ({
+  rank,
+  roommate: { roommate_id: `id-${name}`, name, avatar: null, active: true },
+  is_you: name === 'Hari',
+  points,
+  completed: Math.round(points / 15),
+  on_time: Math.round(points / 15),
+  late: 0,
+  missed: 0,
+  skipped: 0,
+  on_time_percent: points ? 100 : null,
+  best_streak: 2,
+  current_streak: points ? 2 : 0,
+  ...extra,
+});
+const leaderboard = (entries, extra = {}) => ({ ok: true, period: 'month', month: '2026-03', entries, ...extra });
+const STANDINGS = [leagueEntry('Hari', 45, 1), leagueEntry('Jijo', 30, 2), leagueEntry('Arun', 30, 2), leagueEntry('Kim', 15, 4, { roommate: { roommate_id: 'id-Kim', name: 'Kim', avatar: null, active: false } })];
+const leagueCall = (page) => page.calls.lastIndexOf('getLeaderboard');
+const leagueArgs = (page) => page.callArguments[leagueCall(page)][0];
+const openLeague = (answer = leaderboard(STANDINGS)) => {
+  const page = openHistory();
+  page.succeed(historyList([historyEntry('Jijo', 1)]));
+  page.historyClick('history-section', { 'data-section': 'league' });
+  if (answer) page.succeedCall(leagueCall(page), answer);
+  return page;
+};
+
+test('the History tab has History and Leaderboard sections; the Leaderboard loads once, This month first', () => {
+  const page = openHistory();
+  page.succeed(historyList([historyEntry('Jijo', 1)]));
+  assert.match(page.panels.history.innerHTML, /data-section="log" aria-pressed="true"/);
+  assert.equal(page.calls.includes('getLeaderboard'), false, 'not loaded until asked for');
+
+  page.historyClick('history-section', { 'data-section': 'league' });
+  assert.deepEqual(plain(leagueArgs(page)), { token: 'token-Hari', period: 'month' });
+  assert.match(historyText(page), /^The Clean League Tidy weekends earn points\. Friendly rivalry, zero judgment\. History Leaderboard This month All time Counting the points…/);
+  assert.match(page.panels.history.innerHTML, /data-period="month" aria-pressed="true">This month/);
+  assert.doesNotMatch(page.panels.history.innerHTML, /download-history/, 'the CSV button belongs to the History section');
+
+  page.succeedCall(leagueCall(page), leaderboard(STANDINGS));
+  assert.match(historyText(page), /March 2026/);
+  const calls = page.calls.length;
+  page.historyClick('history-section', { 'data-section': 'log' });
+  assert.match(historyText(page), /^History The receipts/);
+  page.historyClick('history-section', { 'data-section': 'league' });
+  page.historyClick('history-section', { 'data-section': 'league' });
+  assert.equal(page.calls.length, calls, 'switching back and forth asks the server nothing while the data is fresh');
+  assert.match(historyText(page), /March 2026/);
+});
+
+test('the podium shows only scoring roommates up to rank 3, shared ranks stay shared, and zero scores get no rank', () => {
+  const page = openLeague();
+  const html = page.panels.history.innerHTML;
+  const podium = html.match(/<ol class="podium"[\s\S]*?<\/ol>/)[0];
+  assert.deepEqual([...podium.matchAll(/<li class="podium-place podium-(\d)">[\s\S]*?class="name">([^<]*)</g)].map((m) => [m[1], m[2]]), [['1', 'Hari'], ['2', 'Jijo'], ['2', 'Arun']], 'Kim is rank 4: standings only');
+  assert.match(textOf(podium), /Rank 1 Hari 45 pts/);
+
+  const rows = html.match(/<ol class="league-list"[\s\S]*?<\/ol>/)[0].match(/<li>[\s\S]*?<\/li>/g).map(textOf);
+  assert.deepEqual(rows, [
+    '1 Hari (you) Done 3 On time 100% Streak 2 45 pts',
+    '2 Jijo Done 2 On time 100% Streak 2 30 pts',
+    '2 Arun Done 2 On time 100% Streak 2 30 pts',
+    '4 Kim · moved out Done 1 On time 100% Streak 2 15 pts',
+  ]);
+  assert.match(html, /class="league-row is-static"/, 'a roommate who moved out has no profile to open');
+  assert.equal((html.match(/<button class="league-row"/g) || []).length, 3);
+  assert.match(textOf(html), /On time: 15 points\. Late: 10\. A vacation skip costs you nothing\./);
+  assert.doesNotMatch(html, /\p{Extended_Pictographic}/u);
+  for (const [svg] of html.matchAll(/<svg\b[^>]*>/g)) assert.match(svg, /aria-hidden="true" focusable="false"/);
+});
+
+test('zero scores crown nobody, null statistics show a dash, and the empty states are kind', () => {
+  const zeros = leaderboard([leagueEntry('Arun', 0, 1), leagueEntry('Hari', 0, 1), leagueEntry('Jijo', 0, 1)]);
+  const page = openLeague(zeros);
+  const html = page.panels.history.innerHTML;
+  assert.doesNotMatch(html, /class="podium"/, 'no podium without points');
+  assert.match(textOf(html), /A fresh month, a clean slate Mark a turn as cleaned and the first points land here\./);
+  const rows = html.match(/<ol class="league-list"[\s\S]*?<\/ol>/)[0].match(/<li>[\s\S]*?<\/li>/g).map(textOf);
+  assert.deepEqual(rows.map((row) => row.slice(0, 6)), ['– Arun', '– Hari', '– Jijo'], 'a shared rank 1 of zeros is not shown as a win');
+  assert.match(rows[0], /Done 0 On time – Streak 0 0 pts/);
+
+  const all = openLeague(leaderboard(zeros.entries, { period: 'all', month: null }));
+  all.historyClick('league-period', { 'data-period': 'all' });
+  all.succeedCall(leagueCall(all), leaderboard(zeros.entries, { period: 'all', month: null }));
+  assert.match(historyText(all), /The league is waiting for its first points/);
+
+  const empty = openLeague(leaderboard([]));
+  assert.match(historyText(empty), /The board is clean Nobody is on the league yet/);
+  assert.doesNotMatch(empty.panels.history.innerHTML, /league-list|podium/);
+
+  const single = openLeague(leaderboard([leagueEntry('Hari', 15, 1)]));
+  assert.equal((single.panels.history.innerHTML.match(/podium-place/g) || []).length, 1, 'a single scorer is a single podium place');
+});
+
+test('This month and All time each ask the server once, show the chosen period, and ignore older answers', () => {
+  const page = openLeague();
+  const calls = page.calls.length;
+  page.historyClick('league-period', { 'data-period': 'month' });
+  assert.equal(page.calls.length, calls, 'the period already shown asks nothing');
+  page.historyClick('league-period', { 'data-period': 'yearly' });
+  assert.equal(page.calls.length, calls, 'an unknown period is ignored');
+
+  page.historyClick('league-period', { 'data-period': 'all' });
+  assert.deepEqual(plain(leagueArgs(page)), { token: 'token-Hari', period: 'all' });
+  assert.match(page.panels.history.innerHTML, /data-period="all" aria-pressed="true">All time/);
+  assert.match(historyText(page), /Counting the points…/);
+  const first = leagueCall(page);
+
+  page.historyClick('league-period', { 'data-period': 'month' });
+  page.succeedCall(first, leaderboard(STANDINGS, { period: 'all', month: null })); // the older answer
+  assert.match(historyText(page), /Counting the points…/, 'an older answer never replaces a newer request');
+  page.succeedCall(leagueCall(page), leaderboard([leagueEntry('Hari', 15, 1)]));
+  assert.match(historyText(page), /March 2026/);
+  assert.doesNotMatch(historyText(page), /Jijo/);
+
+  page.historyClick('league-period', { 'data-period': 'all' });
+  page.succeedCall(leagueCall(page), leaderboard(STANDINGS, { period: 'all', month: null }));
+  assert.match(historyText(page), /Since the beginning/);
+  assert.doesNotMatch(historyText(page), /March 2026/);
+});
+
+test('a standing or podium place opens that roommate’s profile; nobody else’s data is needed', () => {
+  const page = openLeague();
+  page.historyClick('open-member', { 'data-roommate-id': 'id-Jijo' });
+  assert.equal(page.memberDialog.open, true);
+  assert.equal(page.calls[page.calls.length - 1], 'getMemberProfile');
+  assert.deepEqual(plain(page.callArguments[page.callArguments.length - 1]), [{ token: 'token-Hari', roommate_id: 'id-Jijo' }]);
+  assert.match(textOf(page.memberDialog.innerHTML), /^Jijo/);
+  page.memberClick('close-member');
+
+  const calls = page.calls.length;
+  page.historyClick('open-member', { 'data-roommate-id': 'id-Kim' });
+  page.historyClick('open-member', { 'data-roommate-id': 'id-Nobody' });
+  assert.equal(page.memberDialog.open, false, 'a roommate who moved out, or an unknown one, opens nothing');
+  assert.equal(page.calls.length, calls);
+});
+
+test('the league can fail, makes no sense, or end the session, and Try again reloads it', () => {
+  for (const answer of ['network', failure('INTERNAL_ERROR'), { ok: true }, leaderboard(STANDINGS, { period: 'all', month: null }), leaderboard([{ ...STANDINGS[0], points: -1 }]), undefined]) {
+    const page = openLeague(null);
+    if (answer === 'network') page.failCall(leagueCall(page));
+    else page.succeedCall(leagueCall(page), answer);
+    assert.match(historyText(page), /Couldn’t load the league/);
+    assert.doesNotMatch(page.panels.history.innerHTML, /INTERNAL|Server detail/);
+    page.historyClick('retry-league');
+    assert.equal(page.calls.filter((name) => name === 'getLeaderboard').length, 2);
+    page.succeedCall(leagueCall(page), leaderboard(STANDINGS));
+    assert.match(historyText(page), /March 2026/);
+  }
+  const out = openLeague(failure('UNAUTHENTICATED'));
+  assert.equal(out.signedIn(), false);
+  assert.equal(out.panels.history.innerHTML, '');
+});
+
+test('names are escaped, a cleaning refreshes the league on the next visit, and signing out forgets it', () => {
+  const page = openLeague(leaderboard([leagueEntry('<b>Hari</b>', 15, 1, { roommate: { roommate_id: 'id-Hari', name: '<b>Hari</b>', avatar: null, active: true } })]));
+  assert.doesNotMatch(page.panels.history.innerHTML, /<b>/);
+  assert.match(page.panels.history.innerHTML, /&lt;b&gt;Hari&lt;\/b&gt;/);
+
+  const before = page.calls.filter((name) => name === 'getLeaderboard').length;
+  page.tabClick('schedule');
+  page.clickMark();
+  page.dialogClick('confirm-clean');
+  page.succeed({ ok: true, completed_at: '2026-01-14T12:00:00.000Z' });
+  page.succeed(schedule());
+  page.tabClick('history');
+  assert.equal(page.calls.filter((name) => name === 'getLeaderboard').length, before + 1, 'the new points are fetched');
+
+  page.openProfile();
+  page.profileClick('sign-out');
+  assert.equal(page.panels.history.innerHTML, '');
+  assert.equal(page.view('historySection'), 'log');
+  assert.equal(page.view('leagueStatus'), 'idle');
+});
+
+// Cleaning photos
+
+const bytesB64 = (n) => Buffer.alloc(n, 3).toString('base64');
+const jpegUrl = (n) => `data:image/jpeg;base64,${bytesB64(n)}`;
+const PHOTO_DATA = bytesB64(300);
+const photoOk = { ok: true, mime_type: 'image/jpeg', data: PHOTO_DATA };
+const lastCallOf = (page, name) => page.calls.lastIndexOf(name);
+const countOf = (page, name) => page.calls.filter((c) => c === name).length;
+/** Fakes the browser parts of the shrinking: an image of `width` x `height`, and JPEG sizes from `size(quality, w, h)`. */
+function fakePhotoEnv(page, { width = 4000, height = 3000, size = () => 1000, readError = false, decodeError = false } = {}) {
+  const env = page.view('photoEnv');
+  const draws = [];
+  env.readFile = (file, done) => (readError ? done(new Error('read')) : done(null, 'data:image/png;base64,AAAA'));
+  env.loadImage = (url, done) => (decodeError ? done(new Error('decode')) : done(null, { width, height }));
+  env.makeCanvas = (w, h) => {
+    const context = { fillRect: (...a) => draws.push(['fill', ...a]), drawImage: (img, x, y, dw, dh) => draws.push(['draw', dw, dh]), set fillStyle(v) { draws.push(['style', v]); } };
+    return { width: w, height: h, getContext: () => context, toDataURL: (type, quality) => (draws.push(['encode', type, quality, w, h]), jpegUrl(size(quality, w, h))) };
+  };
+  return draws;
+}
+const pickFile = (page, input = 'photoCamera', file = { type: 'image/jpeg', size: 4e6, name: 'p.jpg' }) => {
+  page[input].files = [file];
+  page[input].listeners.change();
+};
+const afterCleaning = (logId = 'log-new') => {
+  const page = withHari();
+  page.clickMark();
+  page.dialogClick('confirm-clean');
+  page.succeed({ ok: true, completed_at: '2026-01-14T12:00:00.000Z', ...(logId ? { log_id: logId } : {}) });
+  page.succeed(schedule());
+  return page;
+};
+
+test('a photo is shrunk to at most 1280 px and 500 KB: quality first, then size, never enlarged, white behind transparency', () => {
+  const page = loadFrontend();
+  const compress = page.view('compressPhoto');
+  const run = (file = { type: 'image/png', size: 1e6 }) => {
+    let outcome;
+    compress(file, (error, result) => {
+      outcome = { error: error && error.code, result: result && { w: result.width, h: result.height, bytes: result.bytes } };
+    });
+    return outcome;
+  };
+  const limit = 500 * 1024;
+
+  let draws = fakePhotoEnv(page, { size: () => 80 * 1024 });
+  assert.deepEqual(run().result, { w: 1280, h: 960, bytes: 80 * 1024 }, 'the longest edge is 1280, the shape is kept');
+  assert.deepEqual(draws.slice(0, 3).map((d) => d[0]), ['style', 'fill', 'draw'], 'the canvas is filled white before the picture is drawn');
+  assert.equal(draws[0][1], '#fff');
+  assert.deepEqual(draws.filter((d) => d[0] === 'encode').map((d) => d[2]), [0.85], 'the first quality that fits is used');
+
+  draws = fakePhotoEnv(page, { width: 800, height: 600, size: () => 10 });
+  assert.deepEqual(run().result, { w: 800, h: 600, bytes: 10 }, 'a small photo is never enlarged');
+  draws = fakePhotoEnv(page, { width: 900, height: 3000, size: () => 10 });
+  assert.deepEqual([run().result.w, run().result.h], [384, 1280], 'portrait: the height is the longest edge');
+
+  draws = fakePhotoEnv(page, { size: (q) => (q > 0.6 ? limit + 1 : limit) });
+  assert.equal(run().result.bytes, limit, 'exactly 500 KB is fine');
+  assert.deepEqual(draws.filter((d) => d[0] === 'encode').map((d) => d[2]), [0.85, 0.75, 0.65, 0.55], 'quality is lowered step by step');
+
+  draws = fakePhotoEnv(page, { size: (q, w) => (w > 1000 ? limit + 1 : 1000) });
+  const smaller = run().result;
+  assert.deepEqual([smaller.w, smaller.h], [768, 576], 'when quality is not enough, the size steps down (1280, 1024, then 768)');
+
+  fakePhotoEnv(page, { size: () => limit + 1 });
+  assert.equal(run().error, 'PHOTO_TOO_LARGE');
+  fakePhotoEnv(page, { readError: true });
+  assert.equal(run().error, 'PHOTO_UNREADABLE');
+  fakePhotoEnv(page, { decodeError: true });
+  assert.equal(run().error, 'PHOTO_UNREADABLE');
+  fakePhotoEnv(page, { width: 0, height: 0 });
+  assert.equal(run().error, 'PHOTO_UNREADABLE');
+  fakePhotoEnv(page);
+  for (const file of [{ type: 'application/pdf', size: 10 }, { type: '', size: 10 }, { type: 'image/jpeg', size: 31 * 1024 * 1024 }, null]) assert.equal(run(file).error, 'PHOTO_UNREADABLE', JSON.stringify(file));
+
+  assert.equal(page.view('base64Bytes')(bytesB64(1)), 1);
+  assert.equal(page.view('base64Bytes')(bytesB64(2)), 2);
+  assert.equal(page.view('base64Bytes')(bytesB64(300)), 300);
+  assert.equal(page.view('safePhotoSrc')('data:image/jpeg;base64,AAAA'), 'data:image/jpeg;base64,AAAA');
+  for (const bad of ['', null, 7, 'https://x/y.jpg', 'javascript:alert(1)', 'data:image/svg+xml;base64,AAAA', 'data:image/jpeg;base64,AA" onerror="x', 'blob:abc', 'data:image/jpeg;base64,AAAA"><script>']) {
+    assert.equal(page.view('safePhotoSrc')(bad), '', String(bad));
+  }
+});
+
+test('after a saved cleaning the page offers a photo, never requires one, and asks the server nothing about photos until used', () => {
+  const page = afterCleaning();
+  assert.match(page.app.innerHTML, /id="photo-prompt-slot"><section class="card photo-prompt"/);
+  assert.match(textOf(page.app.innerHTML), /Show off the shine\? Add a photo of the result\. Totally optional, and you can add one later from History\. Add photo Not now/);
+  assert.match(page.app.innerHTML, /data-action="photo-start" data-log-id="log-new"/);
+  assert.match(page.app.innerHTML, /Nice work, Hari!/, 'the cleaning is confirmed first');
+  assert.equal(page.calls.some((name) => /Photo/.test(name)), false, 'no photo call until the roommate chooses');
+  assert.equal(page.photoDialog.open, false, 'no dialog forced open');
+
+  page.appClick('photo-dismiss');
+  assert.equal(page.photoSlot.innerHTML, '');
+  page.view('showResult')(schedule(), true);
+  assert.doesNotMatch(page.app.innerHTML, /Show off the shine/, 'once dismissed it stays away');
+
+  assert.doesNotMatch(afterCleaning(null).app.innerHTML, /Show off the shine/, 'an answer without a log has nothing to attach to');
+  const failedClean = withHari();
+  failedClean.clickMark();
+  failedClean.dialogClick('confirm-clean');
+  failedClean.succeed(failure('STALE_TURN'));
+  failedClean.succeed(schedule());
+  assert.doesNotMatch(failedClean.app.innerHTML, /Show off the shine/, 'no offer when nothing was saved');
+  const odd = afterCleaning('../../etc');
+  assert.doesNotMatch(odd.app.innerHTML, /photo-start/, 'a malformed ID is never offered');
+});
+
+test('adding: camera or gallery, a preview, one upload with only the shrunk photo, and Remove to start over', () => {
+  const page = afterCleaning();
+  fakePhotoEnv(page, { size: () => 200 * 1024 });
+  page.appClick('photo-start', { 'data-log-id': 'log-new' });
+  assert.equal(page.photoDialog.open, true);
+  assert.match(textOf(page.photoDialog.innerHTML), /^Add a photo Show off the result\. Totally optional\. Take a photo Choose from gallery Not now$/);
+
+  page.photoClick('photo-camera');
+  page.photoClick('photo-gallery');
+  assert.deepEqual([page.photoCamera.clicks, page.photoGallery.clicks], [1, 1], 'each opens its own picker');
+  pickFile(page, 'photoGallery');
+  assert.equal(page.photoGallery.value, '', 'the same photo can be picked again');
+  assert.match(textOf(page.photoDialog.innerHTML), /^Looking good\? 1280 × 960 · 200 KB Upload photo Remove photo$/);
+  assert.match(page.photoDialog.innerHTML, /<img class="photo-img" src="data:image\/jpeg;base64,[A-Za-z0-9+/=]+" alt="The photo you picked">/);
+  assert.equal(page.calls.some((name) => name === 'attachCleaningPhoto'), false, 'nothing is sent before Upload');
+
+  page.photoClick('photo-discard');
+  assert.match(textOf(page.photoDialog.innerHTML), /^Add a photo/);
+  assert.doesNotMatch(page.photoDialog.innerHTML, /<img/);
+  pickFile(page);
+  page.photoClick('photo-upload');
+  page.photoClick('photo-upload');
+  assert.equal(countOf(page, 'attachCleaningPhoto'), 1, 'one request, however often it is clicked');
+  const args = page.callArguments[lastCallOf(page, 'attachCleaningPhoto')];
+  assert.deepEqual(Object.keys(args[0]).sort(), ['log_id', 'photo', 'token']);
+  assert.equal(args[0].log_id, 'log-new');
+  assert.equal(args[0].photo, bytesB64(200 * 1024), 'the shrunk JPEG, as base64, without a data: prefix');
+  assert.match(textOf(page.photoDialog.innerHTML), /Uploading…/);
+  page.photoEscape();
+  assert.equal(page.photoDialog.open, true, 'it cannot be dismissed mid-upload');
+
+  page.succeedCall(lastCallOf(page, 'attachCleaningPhoto'), { ok: true, log_id: 'log-new' });
+  assert.equal(page.photoDialog.open, false);
+  assert.equal(page.photoSlot.innerHTML, '', 'the offer is used up');
+});
+
+test('a photo that cannot be read, or an upload that fails, never touches the cleaning, and can be retried or removed', () => {
+  const page = afterCleaning();
+  fakePhotoEnv(page, { decodeError: true });
+  page.appClick('photo-start', { 'data-log-id': 'log-new' });
+  pickFile(page);
+  assert.match(textOf(page.photoDialog.innerHTML), /^Add a photo Show off the result\. Totally optional\. We couldn’t read that photo\. Try a JPEG or PNG\./);
+  fakePhotoEnv(page, { size: () => 9e6 });
+  pickFile(page);
+  assert.match(textOf(page.photoDialog.innerHTML), /too big even after shrinking/);
+
+  fakePhotoEnv(page, { size: () => 100 * 1024 });
+  pickFile(page);
+  const appBefore = page.app.innerHTML;
+  const callsBefore = page.calls.length;
+  for (const [answer, pattern] of [[failure('PHOTO_UPLOAD_FAILED'), /Your cleaning is safe and still counts/], [failure('PHOTO_NOT_CONFIGURED'), /Photos aren’t set up yet/], [failure('BUSY'), /Someone else is saving/], [failure('NOT_YOUR_CLEANING'), /Only the roommate who did this cleaning/], [failure('WEIRD'), /Your cleaning is unaffected/], ['network', /Your cleaning is safe/]]) {
+    page.photoClick('photo-upload');
+    if (answer === 'network') page.failCall(lastCallOf(page, 'attachCleaningPhoto'));
+    else page.succeedCall(lastCallOf(page, 'attachCleaningPhoto'), answer);
+    assert.match(textOf(page.photoDialog.innerHTML), /^That didn’t go through /);
+    assert.match(textOf(page.photoDialog.innerHTML), pattern);
+    assert.match(page.photoDialog.innerHTML, /role="alert"/);
+    assert.doesNotMatch(page.photoDialog.innerHTML, /Server detail/);
+    assert.match(page.photoDialog.innerHTML, /data-action="photo-upload" autofocus>Try again</, 'the same shrunk photo can be sent again');
+    assert.equal(page.photoDialog.open, true);
+  }
+  assert.equal(page.app.innerHTML, appBefore, 'the schedule is exactly as it was');
+  assert.deepEqual(page.calls.slice(callsBefore).filter((n) => n !== 'attachCleaningPhoto'), [], 'no schedule, rotation or history call came out of the failures');
+  page.photoClick('photo-discard');
+  page.photoClick('photo-close');
+  assert.equal(page.photoDialog.open, false);
+  assert.match(page.app.innerHTML, /photo-start/, 'closing keeps the offer: it can still be used or dismissed');
+});
+
+test('History shows photo buttons only where the server allows them, and a photo is fetched only when opened', () => {
+  const page = openHistory();
+  page.succeed(historyList([
+    historyEntry('Jijo', 1, { has_photo: true, can_add_photo: false, can_delete_photo: false }),
+    historyEntry('Hari', 2, { has_photo: false, can_add_photo: true, can_delete_photo: false }),
+    historyEntry('Arun', 3, { has_photo: false, can_add_photo: false, can_delete_photo: false }),
+    historyEntry('Kim', 4),
+  ]));
+  const html = page.panels.history.innerHTML;
+  assert.deepEqual([...html.matchAll(/data-action="(view-photo|add-photo)" data-log-id="([^"]+)"/g)].map((m) => [m[1], m[2]]), [['view-photo', 'log-1'], ['add-photo', 'log-2']]);
+  assert.doesNotMatch(html, /\p{Extended_Pictographic}/u);
+  assert.equal(countOf(page, 'getCleaningPhoto'), 0, 'listing History downloads no image');
+
+  page.historyClick('view-photo', { 'data-log-id': 'log-3' }); // not offered, and refused if forged
+  page.historyClick('view-photo', { 'data-log-id': '../x' });
+  page.historyClick('add-photo', { 'data-log-id': 'log-1' });
+  page.historyClick('add-photo', { 'data-log-id': 'log-9' });
+  assert.equal(page.photoDialog.open, false);
+
+  page.historyClick('view-photo', { 'data-log-id': 'log-1' });
+  assert.equal(page.photoDialog.open, true);
+  assert.match(textOf(page.photoDialog.innerHTML), /^Jijo · Sat 10 – Sun 11 Jan Close$/, 'the caption names the roommate and weekend');
+  assert.equal(countOf(page, 'getCleaningPhoto'), 1);
+  assert.deepEqual(plain(page.callArguments[lastCallOf(page, 'getCleaningPhoto')]), [{ token: 'token-Hari', log_id: 'log-1' }]);
+  page.succeedCall(lastCallOf(page, 'getCleaningPhoto'), photoOk);
+  assert.match(page.photoDialog.innerHTML, new RegExp(`<img class="photo-img" src="data:image/jpeg;base64,${PHOTO_DATA.replace(/[+/]/g, '\\$&')}"`));
+  assert.doesNotMatch(page.photoDialog.innerHTML, /photo-delete/, 'no delete without the right');
+  page.photoClick('photo-delete');
+  page.photoClick('photo-delete-confirm');
+  assert.equal(countOf(page, 'deleteCleaningPhoto'), 0);
+
+  page.photoClick('photo-close');
+  page.historyClick('view-photo', { 'data-log-id': 'log-1' });
+  assert.equal(countOf(page, 'getCleaningPhoto'), 1, 'a photo seen this session is not downloaded again');
+  assert.match(page.photoDialog.innerHTML, /<img/);
+});
+
+test('a photo that cannot be shown says so and can be retried; hostile or malformed answers are never drawn', () => {
+  for (const [answer, pattern] of [['network', /Photos are unavailable right now/], [failure('PHOTO_NOT_FOUND'), /no photo for this cleaning any more/], [failure('PHOTO_STORAGE_FAILED'), /Photos are unavailable/], [{ ok: true, mime_type: 'image/jpeg', data: 'AAAA"><script>x</script>' }, /Photos are unavailable/], [{ ok: true, mime_type: 'text/html', data: 'AAAA' }, /Photos are unavailable/], [{ ok: true }, /Photos are unavailable/]]) {
+    const page = openHistory();
+    page.succeed(historyList([historyEntry('Jijo', 1, { has_photo: true })]));
+    page.historyClick('view-photo', { 'data-log-id': 'log-1' });
+    if (answer === 'network') page.failCall(lastCallOf(page, 'getCleaningPhoto'));
+    else page.succeedCall(lastCallOf(page, 'getCleaningPhoto'), answer);
+    assert.match(textOf(page.photoDialog.innerHTML), /^Couldn’t show the photo /);
+    assert.match(textOf(page.photoDialog.innerHTML), pattern);
+    assert.doesNotMatch(page.photoDialog.innerHTML, /<img|<script/);
+    page.photoClick('photo-retry');
+    assert.equal(countOf(page, 'getCleaningPhoto'), 2);
+    page.succeedCall(lastCallOf(page, 'getCleaningPhoto'), photoOk);
+    assert.match(page.photoDialog.innerHTML, /<img/);
+  }
+});
+
+test('adding later from History works for your own cleaning, and the list refreshes afterwards', () => {
+  const page = openHistory();
+  page.succeed(historyList([historyEntry('Hari', 2, { can_add_photo: true })]));
+  fakePhotoEnv(page, { size: () => 50 * 1024 });
+  page.historyClick('add-photo', { 'data-log-id': 'log-2' });
+  assert.match(textOf(page.photoDialog.innerHTML), /^Add a photo/);
+  pickFile(page, 'photoGallery');
+  page.photoClick('photo-upload');
+  assert.equal(plain(page.callArguments[lastCallOf(page, 'attachCleaningPhoto')])[0].log_id, 'log-2');
+  const before = countOf(page, 'listCleaningHistory');
+  page.succeedCall(lastCallOf(page, 'attachCleaningPhoto'), { ok: true });
+  assert.equal(page.photoDialog.open, false);
+  assert.equal(countOf(page, 'listCleaningHistory'), before + 1, 'History is reloaded to show the new photo');
+  page.succeed(historyList([historyEntry('Hari', 2, { has_photo: true, can_delete_photo: true })]));
+  assert.match(page.panels.history.innerHTML, /data-action="view-photo" data-log-id="log-2"/);
+  assert.doesNotMatch(page.panels.history.innerHTML, /add-photo/);
+});
+
+test('deleting asks first, uses the rights the server reported, forgets the cached photo, and explains a refusal', () => {
+  const page = openHistory();
+  page.succeed(historyList([historyEntry('Jijo', 1, { has_photo: true, can_delete_photo: true })]));
+  page.historyClick('view-photo', { 'data-log-id': 'log-1' });
+  page.succeedCall(lastCallOf(page, 'getCleaningPhoto'), photoOk);
+  assert.match(page.photoDialog.innerHTML, /data-action="photo-delete"/);
+  page.photoClick('photo-delete');
+  assert.match(textOf(page.photoDialog.innerHTML), /^Delete this photo\? The cleaning stays on record and still counts\. Only the photo goes\. Delete photo Keep it$/);
+  assert.match(page.photoDialog.innerHTML, /data-action="photo-keep" autofocus/, 'the safe choice has focus');
+  page.photoClick('photo-keep');
+  assert.match(page.photoDialog.innerHTML, /photo-delete"/);
+  assert.equal(countOf(page, 'deleteCleaningPhoto'), 0);
+
+  page.photoClick('photo-delete');
+  page.photoClick('photo-delete-confirm');
+  page.photoClick('photo-delete-confirm');
+  assert.equal(countOf(page, 'deleteCleaningPhoto'), 1);
+  assert.deepEqual(plain(page.callArguments[lastCallOf(page, 'deleteCleaningPhoto')]), [{ token: 'token-Hari', log_id: 'log-1' }]);
+  const before = countOf(page, 'listCleaningHistory');
+  page.succeedCall(lastCallOf(page, 'deleteCleaningPhoto'), { ok: true });
+  assert.equal(page.photoDialog.open, false);
+  assert.equal(countOf(page, 'listCleaningHistory'), before + 1);
+  page.succeed(historyList([historyEntry('Jijo', 1)]));
+  page.historyClick('view-photo', { 'data-log-id': 'log-1' });
+  assert.equal(page.photoDialog.open, false, 'the photo is gone from the page');
+
+  const refused = openHistory();
+  refused.succeed(historyList([historyEntry('Jijo', 1, { has_photo: true, can_delete_photo: true })]));
+  refused.historyClick('view-photo', { 'data-log-id': 'log-1' });
+  refused.succeedCall(lastCallOf(refused, 'getCleaningPhoto'), photoOk);
+  for (const [answer, pattern] of [[failure('PHOTO_NOT_YOURS'), /Only the roommate who added this photo, or an admin/], ['network', /couldn’t confirm that the photo was deleted/]]) {
+    refused.photoClick('photo-delete');
+    refused.photoClick('photo-delete-confirm');
+    if (answer === 'network') refused.failCall(lastCallOf(refused, 'deleteCleaningPhoto'));
+    else refused.succeedCall(lastCallOf(refused, 'deleteCleaningPhoto'), answer);
+    assert.match(textOf(refused.photoDialog.innerHTML), pattern);
+    assert.match(refused.photoDialog.innerHTML, /<img/, 'the photo is still shown');
+    assert.equal(refused.photoDialog.open, true);
+  }
+});
+
+test('a profile loads no image until "Show photos" is tapped, then fetches only that roommate’s few and opens one on tap', () => {
+  const recent = (n, extra = {}) => ({ log_id: `log-${n}`, weekend_starts_at: turn('Jijo', -n).weekend_starts_at, due_at: turn('Jijo', -n).due_at, outcome: 'completed', completed_at: '2026-01-10T18:30:00.000Z', resolved_at: '2026-01-10T18:30:00.000Z', swapped: false, has_photo: false, can_add_photo: false, can_delete_photo: false, ...extra });
+  const page = withHari();
+  page.cardClick('id-Jijo');
+  page.succeedCall(2, memberResult('Jijo', { recent: [recent(1, { has_photo: true }), recent(2), recent(3, { has_photo: true, can_delete_photo: true })] }));
+  assert.equal(countOf(page, 'getCleaningPhoto'), 0, 'opening a profile downloads nothing');
+  assert.match(textOf(page.memberDialog.innerHTML), /Photos Show 2 photos/);
+  assert.equal(page.memberDialog.innerHTML.match(/data-action="view-photo"/g).length, 2, 'a Photo button on the two rows that have one');
+
+  page.memberClick('member-gallery');
+  page.memberClick('member-gallery');
+  assert.equal(countOf(page, 'getCleaningPhoto'), 2, 'exactly the two photos, once');
+  assert.match(page.memberDialog.innerHTML, /class="skeleton skeleton-tile"/);
+  page.succeedCall(lastCallOf(page, 'getCleaningPhoto') - 1, photoOk);
+  page.succeedCall(lastCallOf(page, 'getCleaningPhoto'), failure('PHOTO_NOT_FOUND'));
+  const html = page.memberDialog.innerHTML;
+  assert.equal((html.match(/<img class="photo-img" src="data:image\/jpeg;base64,/g) || []).length, 1);
+  assert.match(html, /photo-tile is-missing"><span>Unavailable/);
+  assert.match(html, /alt="Cleaning photo, Sat 10 – Sun 11 Jan"/);
+
+  const before = countOf(page, 'getCleaningPhoto');
+  page.memberClick('view-photo', { 'data-log-id': 'log-1' });
+  assert.equal(page.photoDialog.open, true);
+  assert.equal(countOf(page, 'getCleaningPhoto'), before, 'the gallery’s copy is reused');
+  assert.match(textOf(page.photoDialog.innerHTML), /^Jijo · Sat 10 – Sun 11 Jan/);
+  page.photoClick('photo-close');
+  assert.equal(page.memberDialog.open, true, 'back in the profile');
+
+  const none = withHari();
+  none.cardClick('id-Jijo');
+  none.succeedCall(2, memberResult('Jijo'));
+  assert.doesNotMatch(none.memberDialog.innerHTML, /member-gallery|Photos/);
+});
+
+test('your own profile can add a photo to a recent cleaning, and the profile refreshes with the gallery collapsed', () => {
+  const entry = { log_id: 'log-7', weekend_starts_at: turn('Hari', -1).weekend_starts_at, due_at: turn('Hari', -1).due_at, outcome: 'completed', completed_at: '2026-01-10T18:30:00.000Z', resolved_at: '2026-01-10T18:30:00.000Z', swapped: false, has_photo: false, can_add_photo: true, can_delete_photo: false };
+  const page = withHari();
+  page.cardClick('id-Hari');
+  page.succeedCall(2, own('Hari', { recent: [entry] }));
+  assert.match(page.memberDialog.innerHTML, /data-action="add-photo" data-log-id="log-7"/);
+  fakePhotoEnv(page, { size: () => 20 * 1024 });
+  page.memberClick('add-photo', { 'data-log-id': 'log-7' });
+  assert.match(textOf(page.photoDialog.innerHTML), /^Add a photo/);
+  pickFile(page);
+  page.photoClick('photo-upload');
+  page.succeedCall(lastCallOf(page, 'attachCleaningPhoto'), { ok: true });
+  assert.equal(page.photoDialog.open, false);
+  assert.equal(page.calls[page.calls.length - 1], 'getMemberProfile', 'the profile is reloaded');
+  page.succeedCall(page.calls.length - 1, own('Hari', { recent: [{ ...entry, has_photo: true, can_add_photo: false, can_delete_photo: true }] }));
+  assert.match(textOf(page.memberDialog.innerHTML), /Photo added\. Nicely done\./);
+  assert.match(textOf(page.memberDialog.innerHTML), /Show 1 photo/);
+  assert.equal(countOf(page, 'getCleaningPhoto'), 0);
+});
+
+test('Schedule and the Leaderboard never download an image, and signing out forgets photos, the offer and the dialog', () => {
+  const page = afterCleaning();
+  page.tabClick('history');
+  page.succeed(historyList([historyEntry('Jijo', 1, { has_photo: true })]));
+  page.historyClick('history-section', { 'data-section': 'league' });
+  page.succeedCall(lastCallOf(page, 'getLeaderboard'), leaderboard(STANDINGS));
+  assert.equal(countOf(page, 'getCleaningPhoto'), 0);
+
+  page.historyClick('history-section', { 'data-section': 'log' });
+  page.historyClick('view-photo', { 'data-log-id': 'log-1' });
+  page.succeedCall(lastCallOf(page, 'getCleaningPhoto'), photoOk);
+  page.openProfile();
+  page.profileClick('sign-out');
+  assert.equal(page.photoDialog.innerHTML, '');
+  assert.equal(page.photoDialog.open, false);
+  assert.equal(page.view('photoPrompt'), null);
+  assert.equal(page.view('Object.keys(photoCache).length'), 0);
+  assert.equal(page.signedIn(), false);
 });

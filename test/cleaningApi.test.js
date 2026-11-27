@@ -66,11 +66,10 @@ test('records the actual time, the turn\'s own due date and the outcome, then th
   const others = JSON.stringify(['ROOMMATES', 'ROTATION', 'SWAPS', 'VACATIONS'].map((n) => spreadsheet.getSheetByName(n).values));
 
   const result = mark(project, claimFor(project));
-  assert.deepEqual(result, { ok: true, completed_at: NOW.toISOString() });
-
   const [row, ...extra] = logRows(spreadsheet);
   assert.equal(extra.length, 0);
   assert.match(row.log_id, /^[0-9a-f-]{36}$/);
+  assert.deepEqual(result, { ok: true, completed_at: NOW.toISOString(), log_id: row.log_id }, 'the new record is named, so a photo can be offered afterwards');
   assert.equal(row.rotation_id, ALEX_SLOT);
   assert.equal(row.roommate_id, ALEX);
   assert.equal(row.swap_id, '');
@@ -359,7 +358,7 @@ test('the response is browser-safe JSON with nothing but the outcome', () => {
   const project = server(database());
   const raw = project.get('markCleaned')(asSignedIn(project, claimFor(project)));
   assert.deepEqual(JSON.parse(JSON.stringify(raw)), plain(raw));
-  assert.deepEqual(Object.keys(raw).sort(), ['completed_at', 'ok']);
+  assert.deepEqual(Object.keys(raw).sort(), ['completed_at', 'log_id', 'ok']);
   const failure = project.get('markCleaned')(null);
   assert.deepEqual(Object.keys(failure).sort(), ['error', 'ok']);
 });

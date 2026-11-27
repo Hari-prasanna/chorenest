@@ -128,3 +128,20 @@ test('row mapping follows the sheet header order, not the schema order', () => {
   assert.deepEqual(plain(row), ['alex@example.com', 'm1', false, '', 'Alex']);
   assert.deepEqual(plain(rowToRecord(headers, row)), { ...record, created_at: '' });
 });
+
+test('a roommate avatar is blank or one of the bundled IDs', () => {
+  for (const avatar of ['', null, 'sun', 'moon', 'bolt', 'flame', 'wave', 'peak', 'star', 'drop']) assert.doesNotThrow(() => validateRecord('ROOMMATES', { ...roommate(), avatar }), String(avatar));
+  for (const avatar of ['Sun', 'sun ', 'photo.png', 'http://x', '<b>', 7, true]) assert.throws(() => validateRecord('ROOMMATES', { ...roommate(), avatar }), /avatar|must be a string/, String(avatar));
+  assert.throws(() => validateRecord('ROOMMATES', { ...roommate(), avatar: '=1+1' }), /must not start with/);
+});
+
+test('a cleaning log may carry a Drive photo ID, but only a well-formed one and only on a completed cleaning', () => {
+  const log = writableFixture('CLEANING_LOGS');
+  assert.doesNotThrow(() => validateRecord('CLEANING_LOGS', { ...log, photo_file_id: '' }));
+  assert.doesNotThrow(() => validateRecord('CLEANING_LOGS', { ...log, photo_file_id: '1AbCdEfGhIjKlMnOp_q-r' }));
+  for (const id of ['short', '../../x', 'https://drive.google.com/x', 'a b c d e f g h', '=IMAGE("x")']) {
+    assert.throws(() => validateRecord('CLEANING_LOGS', { ...log, photo_file_id: id }), /photo_file_id|must not start with/, id);
+  }
+  const skipped = { ...log, outcome: 'vacation_skipped', completed_at: '', notes: 'Away', photo_file_id: '1AbCdEfGhIjKlMnOp_q-r' };
+  assert.throws(() => validateRecord('CLEANING_LOGS', skipped), /only on a completed cleaning/);
+});

@@ -1,0 +1,232 @@
+<script>
+// Cleaning photos: shrinking a picked photo in the browser, and the views for adding, viewing and deleting one. Data in,
+// HTML strings out, except compressPhoto, which reads a file through `photoEnv` (a seam so tests can fake the browser).
+// Photos are optional and never block a cleaning. Nothing is loaded from outside: images are data: URIs built from
+// the bytes the server returns, and only on demand.
+const PHOTO_MAX_EDGE = 1280;
+const PHOTO_MAX_BYTES = 500 * 1024; // decoded, the same limit the server enforces
+const PHOTO_MAX_SOURCE_BYTES = 30 * 1024 * 1024; // a picked file larger than this is refused before it is read
+const PHOTO_QUALITIES = [0.85, 0.75, 0.65, 0.55, 0.45, 0.35];
+const PHOTO_SCALES = [1, 0.8, 0.6, 0.45];
+const PHOTO_DATA_URL = /^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/;
+const PHOTO_BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
+
+const PHOTO_MESSAGES = {
+  PHOTO_INVALID: 'That photo wasn’t accepted. Try another one.',
+  PHOTO_EXISTS: 'This cleaning already has a photo. Delete it first to add another.',
+  NOT_YOUR_CLEANING: 'Only the roommate who did this cleaning can add its photo.',
+  PHOTO_NOT_YOURS: 'Only the roommate who added this photo, or an admin, can delete it.',
+  PHOTO_NOT_FOUND: 'There’s no photo for this cleaning any more.',
+  CLEANING_NOT_FOUND: 'That cleaning isn’t on record.',
+  PHOTO_NOT_CONFIGURED: 'Photos aren’t set up yet. Ask the app owner.',
+  PHOTO_STORAGE_FAILED: 'Photos are unavailable right now. Try again later.',
+  PHOTO_UPLOAD_FAILED: 'The photo didn’t make it. Your cleaning is safe and still counts, so you can try again.',
+  BUSY: 'Someone else is saving right now. Try again in a moment.',
+};
+const PHOTO_FALLBACK = 'Something went wrong with the photo. Your cleaning is unaffected. Try again.';
+
+function photoMessage(code) {
+  return Object.prototype.hasOwnProperty.call(PHOTO_MESSAGES, code) ? PHOTO_MESSAGES[code] : PHOTO_FALLBACK;
+}
+
+/** Scales a size down so its longest edge is at most PHOTO_MAX_EDGE; never up. */
+function photoTargetSize(width, height, scale) {
+  const factor = Math.min(1, PHOTO_MAX_EDGE / Math.max(width, height)) * (scale || 1);
+  return { width: Math.max(1, Math.round(width * factor)), height: Math.max(1, Math.round(height * factor)) };
+}
+
+/** Decoded size in bytes of a base64 string. */
+function base64Bytes(base64) {
+  const padding = base64.length >= 2 && base64.slice(-2) === '==' ? 2 : base64.slice(-1) === '=' ? 1 : 0;
+  return Math.floor(base64.length * 3 / 4) - padding;
+}
+
+/** Only a JPEG data URI of our own making is ever put in an image; anything else becomes ''. */
+function safePhotoSrc(value) {
+  return typeof value === 'string' && value.length < 2000000 && PHOTO_DATA_URL.test(value) ? value : '';
+}
+
+// The browser parts, replaceable in tests.
+const photoEnv = {
+  readFile: function (file, done) {
+    const reader = new FileReader();
+    reader.onload = function () {
+      done(null, String(reader.result));
+    };
+    reader.onerror = function () {
+      done(new Error('read'));
+    };
+    reader.readAsDataURL(file);
+  },
+  loadImage: function (dataUrl, done) {
+    const image = new Image();
+    image.onload = function () {
+      done(null, image);
+    };
+    image.onerror = function () {
+      done(new Error('decode'));
+    };
+    image.src = dataUrl;
+  },
+  makeCanvas: function (width, height) {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    return canvas;
+  },
+};
+
+/**
+ * Shrinks a picked image file to a JPEG within PHOTO_MAX_EDGE and PHOTO_MAX_BYTES: first lowering quality, then size.
+ * done(error, { dataUrl, base64, bytes, width, height }) with error.code 'PHOTO_UNREADABLE' | 'PHOTO_TOO_LARGE'.
+ */
+function compressPhoto(file, done) {
+  const fail = function (code) {
+    const error = new Error(code);
+    error.code = code;
+    done(error);
+  };
+  if (!file || typeof file.type !== 'string' || file.type.indexOf('image/') !== 0 || file.size > PHOTO_MAX_SOURCE_BYTES) return fail('PHOTO_UNREADABLE');
+  photoEnv.readFile(file, function (readError, dataUrl) {
+    if (readError) return fail('PHOTO_UNREADABLE');
+    photoEnv.loadImage(dataUrl, function (loadError, image) {
+      if (loadError || !image || !image.width || !image.height) return fail('PHOTO_UNREADABLE');
+      for (let s = 0; s < PHOTO_SCALES.length; s++) {
+        const size = photoTargetSize(image.width, image.height, PHOTO_SCALES[s]);
+        const canvas = photoEnv.makeCanvas(size.width, size.height);
+        const context = canvas.getContext('2d');
+        context.fillStyle = '#fff'; // JPEG has no transparency
+        context.fillRect(0, 0, size.width, size.height);
+        context.drawImage(image, 0, 0, size.width, size.height);
+        for (let q = 0; q < PHOTO_QUALITIES.length; q++) {
+          const url = canvas.toDataURL('image/jpeg', PHOTO_QUALITIES[q]);
+          const base64 = url.slice(url.indexOf(',') + 1);
+          if (PHOTO_DATA_URL.test(url) && base64Bytes(base64) <= PHOTO_MAX_BYTES) {
+            return done(null, { dataUrl: url, base64: base64, bytes: base64Bytes(base64), width: size.width, height: size.height });
+          }
+        }
+      }
+      return fail('PHOTO_TOO_LARGE');
+    });
+  });
+}
+
+function isValidPhotoAnswer(result) {
+  return Boolean(result) && result.ok === true && result.mime_type === 'image/jpeg' && typeof result.data === 'string' &&
+    result.data.length > 0 && PHOTO_BASE64.test(result.data);
+}
+
+function photoSizeText(bytes) {
+  return bytes < 1024 ? bytes + ' B' : Math.round(bytes / 1024) + ' KB';
+}
+
+// ---------- small pieces used by History, profiles and the schedule ----------
+
+/** The photo buttons of one cleaning, as far as the server said the viewer may use them. Empty when there is nothing. */
+function renderPhotoButtons(entry) {
+  const id = escapeHtml(entry.log_id || '');
+  if (!entry.log_id || (!entry.has_photo && !entry.can_add_photo)) return '';
+  return '<span class="photo-actions">' +
+    (entry.has_photo ? '<button class="button button-quiet button-small" type="button" data-action="view-photo" data-log-id="' + id + '">' + icon('image') + '<span>Photo</span></button>' : '') +
+    (entry.can_add_photo ? '<button class="button button-quiet button-small" type="button" data-action="add-photo" data-log-id="' + id + '">' + icon('camera') + '<span>Add photo</span></button>' : '') + '</span>';
+}
+
+/** After a cleaning: an offer, never a requirement. */
+function renderPhotoPrompt(prompt) {
+  if (!prompt) return '';
+  return '<section class="card photo-prompt" aria-labelledby="photo-prompt-title">' + icon('camera') +
+    '<div class="photo-prompt-text"><h2 class="photo-prompt-title" id="photo-prompt-title">Show off the shine?</h2>' +
+    '<p>Add a photo of the result. Totally optional, and you can add one later from History.</p></div>' +
+    '<div class="photo-prompt-actions"><button class="button button-small" type="button" data-action="photo-start" data-log-id="' + escapeHtml(prompt.logId) + '">Add photo</button>' +
+    '<button class="button button-quiet button-small" type="button" data-action="photo-dismiss">Not now</button></div></section>';
+}
+
+// ---------- the photo dialog ----------
+
+function renderPhotoImage(src, label) {
+  const safe = safePhotoSrc(src);
+  return safe ? '<div class="photo-frame"><img class="photo-img" src="' + safe + '" alt="' + escapeHtml(label) + '"></div>' : '';
+}
+
+function renderPhotoBusy(text) {
+  return '<div class="dialog-body" role="status" aria-busy="true"><h2 id="photo-title">' + escapeHtml(text.title) + '</h2>' +
+    '<p class="auth-status"><span class="spinner" aria-hidden="true"></span>' + escapeHtml(text.line) + '</p></div>';
+}
+
+/**
+ * view: { mode: 'add' | 'view', stage, title, preview, bytes, width, height, error, canDelete, confirmingDelete }
+ *   add stages:  'choose' | 'working' | 'preview' | 'uploading' | 'error'
+ *   view stages: 'loading' | 'ready' | 'error' | 'deleting'; `preview` is the loaded photo's data URI
+ */
+function renderPhotoDialog(view) {
+  if (view.mode === 'add') {
+    if (view.stage === 'working') return renderPhotoBusy({ title: 'Add a photo', line: 'Shrinking the photo…' });
+    if (view.stage === 'uploading') return renderPhotoBusy({ title: 'Add a photo', line: 'Uploading…' });
+    if (view.stage === 'preview' || view.stage === 'error') {
+      return '<div class="dialog-body dialog-scroll"><h2 id="photo-title">' + (view.stage === 'error' ? 'That didn’t go through' : 'Looking good?') + '</h2>' +
+        (view.stage === 'error' ? '<p class="form-error" role="alert">' + escapeHtml(view.error) + '</p>' : '') +
+        renderPhotoImage(view.preview, 'The photo you picked') +
+        '<p class="who-note">' + view.width + ' × ' + view.height + ' · ' + escapeHtml(photoSizeText(view.bytes)) + '</p>' +
+        '<div class="dialog-actions"><button class="button" type="button" data-action="photo-upload" autofocus>' + (view.stage === 'error' ? 'Try again' : 'Upload photo') + '</button>' +
+        '<button class="button button-quiet" type="button" data-action="photo-discard">' + icon('trash') + '<span>Remove photo</span></button></div></div>';
+    }
+    return '<div class="dialog-body dialog-scroll"><h2 id="photo-title">Add a photo</h2>' +
+      '<p>Show off the result. Totally optional.</p>' +
+      (view.error ? '<p class="form-error" role="alert">' + escapeHtml(view.error) + '</p>' : '') +
+      '<div class="dialog-actions"><button class="button" type="button" data-action="photo-camera" autofocus>' + icon('camera') + '<span>Take a photo</span></button>' +
+      '<button class="button button-quiet" type="button" data-action="photo-gallery">' + icon('image') + '<span>Choose from gallery</span></button></div>' +
+      '<div class="dialog-actions dialog-actions-single"><button class="button button-quiet" type="button" data-action="photo-close">Not now</button></div></div>';
+  }
+
+  if (view.stage === 'deleting') return renderPhotoBusy({ title: view.title, line: 'Deleting…' });
+  if (view.stage === 'loading') {
+    return '<div class="dialog-body dialog-scroll" role="status" aria-busy="true"><h2 id="photo-title">' + escapeHtml(view.title) + '</h2><div class="skeleton skeleton-photo"></div>' +
+      '<div class="dialog-actions dialog-actions-single"><button class="button button-quiet" type="button" data-action="photo-close" autofocus>Close</button></div></div>';
+  }
+  if (view.stage === 'error') {
+    return '<div class="dialog-body"><h2 id="photo-title">Couldn’t show the photo</h2><p class="form-error" role="alert">' + escapeHtml(view.error) + '</p>' +
+      '<div class="dialog-actions"><button class="button" type="button" data-action="photo-retry">Try again</button>' +
+      '<button class="button button-quiet" type="button" data-action="photo-close" autofocus>Close</button></div></div>';
+  }
+  if (view.confirmingDelete) {
+    return '<div class="dialog-body"><h2 id="photo-title">Delete this photo?</h2><p>The cleaning stays on record and still counts. Only the photo goes.</p>' +
+      '<div class="dialog-actions"><button class="button button-danger-solid" type="button" data-action="photo-delete-confirm">Delete photo</button>' +
+      '<button class="button button-quiet" type="button" data-action="photo-keep" autofocus>Keep it</button></div></div>';
+  }
+  return '<div class="dialog-body dialog-scroll"><h2 id="photo-title">' + escapeHtml(view.title) + '</h2>' +
+    (view.error ? '<p class="form-error" role="alert">' + escapeHtml(view.error) + '</p>' : '') +
+    renderPhotoImage(view.preview, view.title) +
+    '<div class="dialog-actions' + (view.canDelete ? '' : ' dialog-actions-single') + '">' +
+    (view.canDelete ? '<button class="button button-quiet button-danger" type="button" data-action="photo-delete">' + icon('trash') + '<span>Delete photo</span></button>' : '') +
+    '<button class="button" type="button" data-action="photo-close" autofocus>Close</button></div></div>';
+}
+
+// ---------- the profile gallery ----------
+
+/**
+ * recent: the profile's recent entries. gallery: { status: 'idle' | 'loading' | 'ready', photos: { log_id: data URI | null } }.
+ * Nothing is downloaded until "Show photos" is tapped.
+ */
+function renderPhotoGallery(recent, gallery) {
+  const withPhotos = recent.filter(function (entry) {
+    return entry.has_photo;
+  });
+  if (!withPhotos.length) return '';
+  const heading = '<h3 class="eyebrow section-title">' + icon('image') + 'Photos</h3>';
+  if (gallery.status === 'idle') {
+    return heading + '<button class="button button-quiet button-small" type="button" data-action="member-gallery">' + icon('image') + '<span>Show ' +
+      (withPhotos.length === 1 ? '1 photo' : withPhotos.length + ' photos') + '</span></button>';
+  }
+  if (gallery.status === 'loading') return heading + '<div class="photo-grid" role="status" aria-busy="true">' + withPhotos.map(function () {
+    return '<div class="skeleton skeleton-tile"></div>';
+  }).join('') + '</div>';
+  return heading + '<ul class="photo-grid">' + withPhotos.map(function (entry) {
+    const src = safePhotoSrc(gallery.photos[entry.log_id]);
+    const label = formatWeekend(entry);
+    return '<li>' + (src
+      ? '<button class="photo-tile" type="button" data-action="view-photo" data-log-id="' + escapeHtml(entry.log_id) + '"><img class="photo-img" src="' + src + '" alt="' + escapeHtml('Cleaning photo, ' + label) + '">' +
+        '<span class="photo-caption">' + escapeHtml(label) + '</span></button>'
+      : '<div class="photo-tile is-missing"><span>Unavailable</span><span class="photo-caption">' + escapeHtml(label) + '</span></div>') + '</li>';
+  }).join('') + '</ul>';
+}
+</script>

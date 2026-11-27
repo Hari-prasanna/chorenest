@@ -62,7 +62,7 @@ test('adds the roommate with the next sequential code and the next rotation posi
   assert.match(added.roommate_id, /^[0-9a-f-]{36}$/);
   assert.deepEqual(
     { ...added, roommate_id: undefined, created_at: Object.prototype.toString.call(added.created_at) },
-    { roommate_id: undefined, member_code: 'JHN-005', name: 'John Smith', email: 'john.smith@example.com', telegram_username: 'john_smith', active: true, welcome_sent_at: '', created_at: '[object Date]', username: '', role: '', password_hash: '', must_change_password: '', session_version: '', failed_logins: '', locked_until: '', password_expires_at: '' }
+    { roommate_id: undefined, member_code: 'JHN-005', name: 'John Smith', email: 'john.smith@example.com', telegram_username: 'john_smith', active: true, welcome_sent_at: '', created_at: '[object Date]', username: '', role: '', password_hash: '', must_change_password: '', session_version: '', failed_logins: '', locked_until: '', password_expires_at: '', avatar: '' }
   );
   const slot = table(spreadsheet, 'ROTATION')[4];
   assert.equal(slot.position, 5);
@@ -87,7 +87,7 @@ test('an unused position can be chosen, gaps are fine, and the engine and API pi
   const result = plain(raw);
   assert.equal(result.ok, true);
   assert.ok(result.roommates.some((r) => r.name === 'John Smith'));
-  for (const roommate of result.roommates) assert.deepEqual(Object.keys(roommate).sort(), ['name', 'roommate_id'], 'no codes, emails or Telegram names are exposed');
+  for (const roommate of result.roommates) assert.deepEqual(Object.keys(roommate).sort(), ['avatar', 'name', 'roommate_id'], 'no codes, emails or Telegram names are exposed');
   assert.doesNotMatch(JSON.stringify(raw), /john\.smith@|JHN-005|john_smith/);
 });
 
@@ -326,7 +326,7 @@ test('a legacy five-column ROOMMATES sheet is extended without touching its rows
   project.get('setupDatabase_')();
 
   const sheet = spreadsheet.getSheetByName('ROOMMATES');
-  assert.deepEqual(plain(sheet.values[0]), ['roommate_id', 'name', 'email', 'active', 'created_at', 'member_code', 'telegram_username', 'welcome_sent_at', 'username', 'role', 'password_hash', 'must_change_password', 'session_version', 'failed_logins', 'locked_until', 'password_expires_at']);
+  assert.deepEqual(plain(sheet.values[0]), ['roommate_id', 'name', 'email', 'active', 'created_at', 'member_code', 'telegram_username', 'welcome_sent_at', 'username', 'role', 'password_hash', 'must_change_password', 'session_version', 'failed_logins', 'locked_until', 'password_expires_at', 'avatar']);
   assert.deepEqual(plain(sheet.values[1].slice(0, 4)), ['id-hari', 'Hari', 'hari@example.com', true]);
   assert.equal(sheet.values[1][4].getTime(), legacy[1][4].getTime(), 'the existing row is untouched');
   assert.equal(plain(project.get('SheetDb').list('ROOMMATES'))[0].member_code, '');

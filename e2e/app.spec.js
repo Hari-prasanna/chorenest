@@ -955,3 +955,317 @@ test.describe('swaps', () => {
     expect(await calls(page, 'listSwaps')).toHaveLength(2);
   });
 });
+
+test.describe('member cards and avatars', () => {
+  test('Coming up shows avatar cards; a card opens a profile, and your own profile lets you pick an avatar', async ({ page }, testInfo) => {
+    const { problems } = await openApp(page, { as: HARI });
+    const cards = page.locator('.member-card');
+    await expect(cards).toHaveCount(3);
+    await expect(cards.nth(0)).toContainText('Jijo');
+    await expect(cards.nth(0)).toContainText('Up next');
+    await expectHealthyLayout(page, 'member cards');
+    await shot(page, testInfo, 'member-cards');
+
+    await cards.nth(0).click();
+    const dialog = page.locator('#member-dialog');
+    await expect(dialog.getByRole('heading', { name: 'Jijo' })).toBeVisible();
+    await expect(dialog).toContainText('Cleanings done');
+    await expect(dialog).toContainText('92%');
+    await expect(dialog).toContainText('Skipped: away');
+    await expect(dialog.getByRole('button', { name: 'Change avatar' })).toHaveCount(0);
+    await shot(page, testInfo, 'member-profile');
+    await dialog.getByRole('button', { name: 'Close' }).click();
+    await expect(dialog).toBeHidden();
+
+    await cards.nth(2).click(); // Hari, later on
+    await expect(dialog.getByRole('heading', { name: 'Hari' })).toBeVisible();
+    await dialog.getByRole('button', { name: 'Change avatar' }).click();
+    await expect(dialog.locator('.avatar-choice')).toHaveCount(9);
+    await shot(page, testInfo, 'avatar-picker');
+    await dialog.getByRole('button', { name: 'Flame' }).click();
+    await expect(dialog).toContainText('Avatar updated.');
+    expect((await calls(page, 'setMyAvatar')).map((call) => call.args)).toEqual([[{ token: 'token-Hari', avatar: 'flame' }]]);
+    await dialog.getByRole('button', { name: 'Close' }).click();
+    await expect(page.locator('.hero .avatar svg')).toHaveCount(1);
+    await expect(cards.nth(2).locator('.avatar svg')).toHaveCount(1);
+    await expect(page.locator('#profile-button .avatar svg')).toHaveCount(1);
+    expect(problems).toEqual([]);
+  });
+
+  test('your own profile opens from Profile, and an unreachable profile can be retried', async ({ page }) => {
+    const { problems } = await openApp(page, { as: HARI, responses: { getMemberProfile: { __network: true } } });
+    await page.locator('#profile-button').click();
+    await page.getByRole('button', { name: 'My profile and avatar' }).click();
+    const dialog = page.locator('#member-dialog');
+    await expect(dialog).toContainText('Couldn’t load this profile');
+    await page.evaluate(() => {
+      delete window.__mock.responses.getMemberProfile;
+    });
+    await dialog.getByRole('button', { name: 'Try again' }).click();
+    await expect(dialog.getByRole('button', { name: 'Change avatar' })).toBeVisible();
+    await expect(page.locator('#profile-dialog')).toBeHidden();
+    expect(problems.filter((p) => !/network/i.test(p))).toEqual([]);
+  });
+});
+
+test.describe('the Clean League', () => {
+  const openLeague = async (page, options = {}) => {
+    const { problems } = await openApp(page, { as: HARI, ...options });
+    await tab(page, 'history').click();
+    await panel(page, 'history').getByRole('button', { name: 'Leaderboard' }).click();
+    return problems;
+  };
+
+  test('Leaderboard shows the podium and standings with shared ranks; This month and All time switch; a row opens the profile', async ({ page }, testInfo) => {
+    const problems = await openLeague(page);
+    const league = panel(page, 'history');
+    await expect(league.getByRole('heading', { name: 'The Clean League' })).toBeVisible();
+    await expect(league.getByRole('button', { name: 'This month' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(league).toContainText('March 2026');
+    await expect(league.locator('.podium-place')).toHaveCount(3);
+    await expect(league.locator('.league-row')).toHaveCount(4);
+    await expect(league.locator('.league-row').nth(1)).toContainText('Jijo');
+    await expect(league.locator('.league-rank')).toHaveText(['1', '2', '2', '4']);
+    await expect(league.locator('.league-row.is-static')).toContainText('moved out');
+    await expectHealthyLayout(page, 'league');
+    await shot(page, testInfo, 'league');
+    expect((await calls(page, 'getLeaderboard')).map((call) => call.args)).toEqual([[{ token: 'token-Hari', period: 'month' }]]);
+
+    await league.getByRole('button', { name: 'All time' }).click();
+    await expect(league).toContainText('Since the beginning');
+    await expect(league.locator('.league-points').first()).toContainText('180');
+    await expectHealthyLayout(page, 'league all time');
+
+    await league.locator('.league-row', { hasText: 'Jijo' }).click();
+    const dialog = page.locator('#member-dialog');
+    await expect(dialog.getByRole('heading', { name: 'Jijo' })).toBeVisible();
+    await expect(dialog).toContainText('Cleanings done');
+    await dialog.getByRole('button', { name: 'Close' }).click();
+    await league.locator('.podium-card', { hasText: 'Hari' }).click();
+    await expect(dialog.getByRole('button', { name: 'Change avatar' })).toBeVisible();
+
+    await dialog.getByRole('button', { name: 'Close' }).click();
+    await league.getByRole('button', { name: 'History', exact: true }).click();
+    await expect(league.locator('tbody tr')).toHaveCount(3);
+    expect(problems).toEqual([]);
+  });
+
+  test('with no points nobody is crowned, and a failed load can be retried', async ({ page }) => {
+    const zero = (name, active = true) => ({ rank: 1, roommate: { roommate_id: 'id-' + name, name, avatar: null, active }, is_you: name === 'Hari', points: 0, completed: 0, on_time: 0, late: 0, missed: 0, skipped: 0, on_time_percent: null, best_streak: 0, current_streak: 0 });
+    const problems = await openLeague(page, { responses: { getLeaderboard: { ok: true, period: 'month', month: '2026-03', entries: [zero('Arun'), zero('Hari'), zero('Jijo')] } } });
+    const league = panel(page, 'history');
+    await expect(league).toContainText('A fresh month, a clean slate');
+    await expect(league.locator('.podium')).toHaveCount(0);
+    await expect(league.locator('.league-rank')).toHaveText(['–', '–', '–']);
+    await expect(league.locator('.league-stats').first()).toContainText('On time –');
+    await expectHealthyLayout(page, 'league without points');
+
+    await page.evaluate(() => {
+      window.__mock.responses.getLeaderboard = { __network: true };
+    });
+    await league.getByRole('button', { name: 'All time' }).click();
+    await expect(league).toContainText('Couldn’t load the league');
+    await page.evaluate(() => {
+      delete window.__mock.responses.getLeaderboard;
+    });
+    await league.getByRole('button', { name: 'Try again' }).click();
+    await expect(league.locator('.podium-place')).toHaveCount(3);
+    expect(problems.filter((p) => !/network/i.test(p))).toEqual([]);
+  });
+});
+
+test.describe('Coming up cards', () => {
+  test('on phones the cards scroll sideways inside the card and the page does not; on wide screens they sit in three columns', async ({ page }, testInfo) => {
+    const { problems } = await openApp(page, { as: HARI });
+    const cards = page.locator('.member-card');
+    await expect(cards).toHaveCount(3);
+    const wide = page.viewportSize().width >= 640;
+    const report = await page.evaluate(() => {
+      const grid = document.querySelector('.member-grid');
+      const doc = document.documentElement;
+      return {
+        scrollable: grid.scrollWidth > grid.clientWidth + 1,
+        pageOverflow: doc.scrollWidth - doc.clientWidth,
+        columns: getComputedStyle(grid).display === 'grid' ? getComputedStyle(grid).gridTemplateColumns.split(' ').length : 0,
+        top: Array.from(document.querySelectorAll('.member-card')).map((card) => Math.round(card.getBoundingClientRect().top)),
+      };
+    });
+    expect(report.pageOverflow, 'no page-level horizontal scrolling').toBeLessThanOrEqual(0);
+    if (wide) {
+      expect(report.columns).toBe(3);
+      expect(report.scrollable).toBe(false);
+      expect(new Set(report.top).size, 'one row').toBe(1);
+    } else {
+      expect(report.scrollable, 'the third card is reached by scrolling the list').toBe(true);
+      await cards.nth(2).scrollIntoViewIfNeeded();
+      await expect(cards.nth(2)).toBeInViewport();
+      expect(await page.evaluate(() => document.documentElement.scrollLeft), 'the page itself did not move sideways').toBe(0);
+    }
+    await expectHealthyLayout(page, 'coming up');
+    await shot(page, testInfo, 'coming-up');
+    await cards.nth(0).click(); // the profile is still one tap away
+    await expect(page.locator('#member-dialog').getByRole('heading', { name: 'Jijo' })).toBeVisible();
+    expect(problems).toEqual([]);
+  });
+});
+
+test.describe('cleaning photos', () => {
+  const CLEANED = { ok: true, completed_at: '2026-01-14T12:00:00.000Z', log_id: 'log-new' };
+  // Puts a large, noisy picture (hard to compress) into a file input, as the camera or gallery would.
+  const chooseBigPhoto = (page, input) => page.evaluate(async (id) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 3200;
+    canvas.height = 2400;
+    const context = canvas.getContext('2d');
+    const image = context.createImageData(3200, 2400);
+    for (let i = 0; i < image.data.length; i += 4) {
+      image.data[i] = Math.random() * 255;
+      image.data[i + 1] = Math.random() * 255;
+      image.data[i + 2] = Math.random() * 255;
+      image.data[i + 3] = 255;
+    }
+    context.putImageData(image, 0, 0);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.95));
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([blob], 'big.jpg', { type: 'image/jpeg' }));
+    const target = document.getElementById(id);
+    target.files = transfer.files;
+    target.dispatchEvent(new Event('change'));
+    return blob.size;
+  }, input);
+
+  test('after a cleaning the photo is optional: a big picture is shrunk in the browser, previewed and uploaded within the limits', async ({ page }, testInfo) => {
+    const { problems } = await openApp(page, { as: HARI, cleanResponse: CLEANED });
+    await page.locator('.mark-button').click();
+    await page.locator('#confirm-dialog').getByRole('button', { name: /Yes, it’s clean/ }).click();
+    const prompt = page.locator('.photo-prompt');
+    await expect(prompt).toContainText('Show off the shine?');
+    await expect(page.locator('.notice-success')).toContainText('Nice work, Hari!');
+    await expectHealthyLayout(page, 'photo offer');
+    await shot(page, testInfo, 'photo-prompt');
+    expect(await calls(page, 'attachCleaningPhoto'), 'nothing is uploaded unless asked for').toHaveLength(0);
+
+    await prompt.getByRole('button', { name: 'Add photo' }).click();
+    const dialog = page.locator('#photo-dialog');
+    await expect(dialog.getByRole('button', { name: 'Take a photo' })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Choose from gallery' })).toBeVisible();
+    await shot(page, testInfo, 'photo-choose');
+    const original = await chooseBigPhoto(page, 'photo-gallery');
+    await expect(dialog.getByRole('button', { name: 'Upload photo' })).toBeVisible({ timeout: 20000 });
+    const preview = dialog.locator('.photo-img');
+    await expect(preview).toBeVisible();
+    const shown = await preview.evaluate((img) => ({ w: img.naturalWidth, h: img.naturalHeight }));
+    expect(Math.max(shown.w, shown.h), 'the longest edge is at most 1280').toBeLessThanOrEqual(1280);
+    expect(original, 'the original really was big').toBeGreaterThan(1.5 * 1024 * 1024);
+    await expectHealthyLayout(page, 'photo preview');
+    await shot(page, testInfo, 'photo-preview');
+
+    await dialog.getByRole('button', { name: 'Upload photo' }).click();
+    await expect(dialog).toBeHidden();
+    await expect(prompt).toHaveCount(0);
+    const [call] = await calls(page, 'attachCleaningPhoto');
+    expect(Object.keys(call.args[0]).sort()).toEqual(['log_id', 'photo', 'token']);
+    const sent = await page.evaluate(async (base64) => {
+      const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+      const image = new Image();
+      image.src = 'data:image/jpeg;base64,' + base64;
+      await image.decode();
+      return { size: bytes.length, start: Array.from(bytes.slice(0, 3)), end: Array.from(bytes.slice(-2)), w: image.naturalWidth, h: image.naturalHeight };
+    }, call.args[0].photo);
+    expect(sent.size, 'at most 500 KB decoded').toBeLessThanOrEqual(500 * 1024);
+    expect(sent.start).toEqual([0xff, 0xd8, 0xff]);
+    expect(sent.end).toEqual([0xff, 0xd9]);
+    expect(Math.max(sent.w, sent.h)).toBeLessThanOrEqual(1280);
+    expect(call.args[0].log_id).toBe('log-new');
+    await expect(page.locator('.hero')).toBeVisible();
+    expect(problems).toEqual([]);
+  });
+
+  test('a failed upload leaves the cleaning alone and can be retried; Not now keeps the cleaning without a photo', async ({ page }) => {
+    const { problems } = await openApp(page, { as: HARI, cleanResponse: CLEANED, responses: { attachCleaningPhoto: { ok: false, error: { code: 'PHOTO_UPLOAD_FAILED', message: 'Secret detail' } } } });
+    await page.locator('.mark-button').click();
+    await page.locator('#confirm-dialog').getByRole('button', { name: /Yes, it’s clean/ }).click();
+    await page.locator('.photo-prompt').getByRole('button', { name: 'Add photo' }).click();
+    const dialog = page.locator('#photo-dialog');
+    await chooseBigPhoto(page, 'photo-camera');
+    await dialog.getByRole('button', { name: 'Upload photo' }).click({ timeout: 20000 });
+    await expect(dialog.getByRole('alert')).toContainText('Your cleaning is safe and still counts');
+    await expect(page.locator('body')).not.toContainText('Secret detail');
+    await page.evaluate(() => {
+      delete window.__mock.responses.attachCleaningPhoto;
+    });
+    await dialog.getByRole('button', { name: 'Try again' }).click();
+    await expect(dialog).toBeHidden();
+    expect(await calls(page, 'attachCleaningPhoto')).toHaveLength(2);
+    expect(await calls(page, 'markCleaned'), 'the cleaning was recorded once and never repeated').toHaveLength(1);
+
+    const second = await openApp(page, { as: HARI, cleanResponse: CLEANED });
+    await page.locator('.mark-button').click();
+    await page.locator('#confirm-dialog').getByRole('button', { name: /Yes, it’s clean/ }).click();
+    await page.locator('.photo-prompt').getByRole('button', { name: 'Not now' }).click();
+    await expect(page.locator('.photo-prompt')).toHaveCount(0);
+    expect(await calls(page, 'attachCleaningPhoto')).toHaveLength(0);
+    expect(problems.concat(second.problems)).toEqual([]);
+  });
+
+  test('History marks photos and opens one on demand; the right to delete follows the server; profile gallery loads only when asked', async ({ page }, testInfo) => {
+    const entry = (n, who, extra = {}) => ({
+      log_id: 'log-' + n, roommate: { roommate_id: 'id-' + who, name: who }, weekend_starts_at: new Date(Date.now() - (10 + 7 * n) * 864e5).toISOString(), due_at: new Date(Date.now() - (8 + 7 * n) * 864e5).toISOString(),
+      outcome: 'completed', completed_at: new Date(Date.now() - (9 + 7 * n) * 864e5).toISOString(), resolved_at: new Date(Date.now() - (9 + 7 * n) * 864e5).toISOString(), swapped: false, has_photo: false, can_add_photo: false, can_delete_photo: false, ...extra,
+    });
+    const history = { ok: true, range: '14d', page: 1, page_size: 25, total: 3, pages: 1, entries: [entry(1, 'Jijo', { has_photo: true, can_delete_photo: true }), entry(2, 'Hari', { can_add_photo: true }), entry(3, 'Arun')] };
+    const { problems } = await openApp(page, { as: HARI, history });
+    await tab(page, 'history').click();
+    const rows = panel(page, 'history').locator('tbody tr');
+    await expect(rows).toHaveCount(3);
+    await expect(rows.nth(0).getByRole('button', { name: 'Photo' })).toBeVisible();
+    await expect(rows.nth(1).getByRole('button', { name: 'Add photo' })).toBeVisible();
+    await expect(rows.nth(2).getByRole('button')).toHaveCount(0);
+    await expectHealthyLayout(page, 'history with photos');
+    await shot(page, testInfo, 'history-photos');
+    expect(await calls(page, 'getCleaningPhoto'), 'listing History fetched no image').toHaveLength(0);
+
+    await rows.nth(0).getByRole('button', { name: 'Photo' }).click();
+    const dialog = page.locator('#photo-dialog');
+    await expect(dialog.locator('.photo-img')).toBeVisible();
+    expect(await dialog.locator('.photo-img').evaluate((img) => img.naturalWidth)).toBeGreaterThan(0);
+    await expect(dialog.getByRole('heading', { name: /^Jijo · / })).toBeVisible();
+    await expectHealthyLayout(page, 'photo viewer');
+    await shot(page, testInfo, 'photo-viewer');
+    await dialog.getByRole('button', { name: 'Delete photo' }).click();
+    await expect(dialog.getByRole('heading', { name: 'Delete this photo?' })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Keep it' })).toBeFocused();
+    await dialog.getByRole('button', { name: 'Keep it' }).click();
+    await dialog.getByRole('button', { name: 'Close' }).click();
+    expect(await calls(page, 'getCleaningPhoto')).toHaveLength(1);
+
+    await page.locator('.tab[data-tab="schedule"]').click();
+    await page.locator('.member-card').first().click();
+    const profile = page.locator('#member-dialog');
+    await expect(profile.getByRole('button', { name: /Show 2 photos/ })).toBeVisible();
+    expect(await calls(page, 'getCleaningPhoto'), 'opening a profile fetched no image').toHaveLength(1);
+    await profile.getByRole('button', { name: /Show 2 photos/ }).click();
+    await expect(profile.locator('.photo-tile .photo-img')).toHaveCount(2);
+    expect(await calls(page, 'getCleaningPhoto')).toHaveLength(3);
+    await expectHealthyLayout(page, 'profile gallery');
+    await shot(page, testInfo, 'photo-gallery');
+    await profile.locator('.photo-tile').first().click();
+    await expect(dialog.locator('.photo-img')).toBeVisible();
+    expect(await calls(page, 'getCleaningPhoto'), 'a tapped tile reuses the loaded photo').toHaveLength(3);
+    expect(problems).toEqual([]);
+  });
+
+  test('deleting a photo sends only the log, closes the viewer and refreshes History', async ({ page }) => {
+    const history = { ok: true, range: '14d', page: 1, page_size: 25, total: 1, pages: 1, entries: [{ log_id: 'log-1', roommate: { roommate_id: 'id-Hari', name: 'Hari' }, weekend_starts_at: new Date(Date.now() - 12 * 864e5).toISOString(), due_at: new Date(Date.now() - 10 * 864e5).toISOString(), outcome: 'completed', completed_at: new Date(Date.now() - 11 * 864e5).toISOString(), resolved_at: new Date(Date.now() - 11 * 864e5).toISOString(), swapped: false, has_photo: true, can_add_photo: false, can_delete_photo: true }] };
+    const { problems } = await openApp(page, { as: HARI, history });
+    await tab(page, 'history').click();
+    await panel(page, 'history').getByRole('button', { name: 'Photo' }).click();
+    const dialog = page.locator('#photo-dialog');
+    await dialog.getByRole('button', { name: 'Delete photo' }).click();
+    await dialog.getByRole('button', { name: 'Delete photo' }).click();
+    await expect(dialog).toBeHidden();
+    expect((await calls(page, 'deleteCleaningPhoto')).map((call) => call.args)).toEqual([[{ token: 'token-Hari', log_id: 'log-1' }]]);
+    await expect.poll(async () => (await calls(page, 'listCleaningHistory')).length).toBe(2);
+    expect(problems).toEqual([]);
+  });
+});

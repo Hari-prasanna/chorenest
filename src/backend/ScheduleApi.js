@@ -70,6 +70,15 @@ const PUBLIC_ERROR_MESSAGES = {
   VACATION_JUST_STARTED: 'This vacation started today, so it can’t end today. Ask the app owner to remove it.',
   VACATION_SKIP_RECORDED: 'A turn was already skipped for this vacation, and the new dates no longer cover it. Ask the app owner to change it.',
   VACATION_TURN_CONFLICT: 'This change would affect the current cleaning turn, so it can’t be made here. Ask the app owner to sort it out.',
+  CLEANING_NOT_FOUND: 'That cleaning isn’t on record.',
+  NOT_YOUR_CLEANING: 'Only the roommate who did this cleaning can add its photo.',
+  PHOTO_INVALID: 'Choose a JPEG photo of at most 500 KB.',
+  PHOTO_EXISTS: 'This cleaning already has a photo. Delete it first to add another.',
+  PHOTO_NOT_FOUND: 'There’s no photo for this cleaning.',
+  PHOTO_NOT_YOURS: 'Only the roommate who added this photo, or an admin, can delete it.',
+  PHOTO_NOT_CONFIGURED: 'Photos aren’t set up yet. Ask the app owner.',
+  PHOTO_UPLOAD_FAILED: 'The photo couldn’t be saved. Your cleaning is still recorded, so you can try the photo again.',
+  PHOTO_STORAGE_FAILED: 'Photos are unavailable right now. Try again later.',
   INTERNAL_ERROR: 'Something went wrong. Try again later.',
 };
 
@@ -77,7 +86,7 @@ const PUBLIC_ERROR_MESSAGES = {
  * Browser API (google.script.run): the current cleaning turn and the next few, read-only.
  * Request: { token }. Returns { ok: true, viewer, generated_at, current, upcoming, roommates } or
  * { ok: false, error: { code, message } } (with `viewer` when only the rotation data is the problem).
- * `viewer` is the signed-in roommate from the session; `roommates` lists active roommates' names for display.
+ * `viewer` is the signed-in roommate from the session; `roommates` lists active roommates' names and chosen avatars for display.
  * Dates are ISO strings because google.script.run cannot return Date objects.
  */
 function getRotationSchedule(request) {
@@ -113,7 +122,7 @@ function getRotationSchedule(request) {
         return roommate.active === true;
       })
       .map(function (roommate) {
-        return { roommate_id: roommate.roommate_id, name: names[roommate.roommate_id] };
+        return { roommate_id: roommate.roommate_id, name: names[roommate.roommate_id], avatar: avatarOf_(roommate) };
       })
       .sort(function (a, b) {
         return a.name.localeCompare(b.name);

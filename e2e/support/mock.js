@@ -89,7 +89,7 @@ const vacations = () => ({
 /** Installs the mock before the page's own scripts run. `config` is plain data, so it can cross into the browser. */
 async function installMock(page, config = {}) {
   await page.addInitScript((settings) => {
-    window.__mock = Object.assign({ delay: 0, scheduleResponses: [], vacationsResponse: null, cleanResponse: { ok: true }, responses: {}, viewer: null, accounts: null, history: null, swaps: null }, settings);
+    window.__mock = Object.assign({ delay: 0, scheduleResponses: [], vacationsResponse: null, cleanResponse: { ok: true }, responses: {}, avatars: {}, photos: {}, viewer: null, accounts: null, history: null, swaps: null }, settings);
     window.__calls = [];
     // `hold: true` parks every answer until the test calls window.__mock.release(), so loading states can be
     // asserted without racing a timer.
@@ -121,8 +121,10 @@ async function installMock(page, config = {}) {
           if (name === 'getRotationSchedule') {
             const queue = window.__mock.scheduleResponses;
             const answer = queue.length > 1 ? queue.shift() : queue[0];
-            // Like the server, a good schedule says who is signed in.
-            return answer && answer.ok === true && !answer.viewer && window.__mock.viewer ? { ...answer, viewer: window.__mock.viewer } : answer;
+            // Like the server, a good schedule says who is signed in, and lists the chosen avatars.
+            const avatars = window.__mock.avatars;
+            const withAvatars = answer && answer.ok === true ? { ...answer, roommates: answer.roommates.map((r) => ({ avatar: avatars[r.roommate_id] || null, ...r })) } : answer;
+            return withAvatars && withAvatars.ok === true && !withAvatars.viewer && window.__mock.viewer ? { ...withAvatars, viewer: window.__mock.viewer } : withAvatars;
           }
           if (Object.prototype.hasOwnProperty.call(window.__mock.responses, name)) {
             const answer = window.__mock.responses[name];
@@ -134,6 +136,62 @@ async function installMock(page, config = {}) {
             const display = username.charAt(0).toUpperCase() + username.slice(1);
             window.__mock.viewer = { roommate_id: `id-${display}`, name: display, role: 'ROOMMATE', must_change_password: false };
             return { ok: true, session: { token: `token-${username}`, expires_at: '2099-01-01T00:00:00.000Z' }, viewer: window.__mock.viewer };
+          }
+          if (name === 'getMemberProfile' && !Object.prototype.hasOwnProperty.call(window.__mock.responses, name)) {
+            const id = String(args[0].roommate_id);
+            const at = (days) => new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+            return {
+              ok: true,
+              member: { roommate_id: id, name: id.replace(/^id-/, ''), avatar: window.__mock.avatars[id] || null, is_you: Boolean(window.__mock.viewer) && window.__mock.viewer.roommate_id === id },
+              stats: { completed: 12, on_time: 11, on_time_percent: 92 },
+              recent: [
+                { log_id: 'log-a', weekend_starts_at: at(-10), due_at: at(-8), outcome: 'completed', completed_at: at(-9), resolved_at: at(-9), swapped: false, has_photo: true, can_add_photo: false, can_delete_photo: false },
+                { log_id: 'log-b', weekend_starts_at: at(-17), due_at: at(-15), outcome: 'vacation_skipped', completed_at: null, resolved_at: at(-15), swapped: false, has_photo: false, can_add_photo: false, can_delete_photo: false },
+                { log_id: 'log-c', weekend_starts_at: at(-24), due_at: at(-22), outcome: 'completed', completed_at: at(-21), resolved_at: at(-21), swapped: true, has_photo: true, can_add_photo: false, can_delete_photo: false },
+              ],
+              next: { weekend_starts_at: at(4), due_at: at(6), current: false, covering: null },
+            };
+          }
+          if (name === 'getLeaderboard' && !Object.prototype.hasOwnProperty.call(window.__mock.responses, name)) {
+            const period = args[0].period;
+            const row = (name, rank, points, extra = {}) => ({
+              rank, roommate: { roommate_id: 'id-' + name, name, avatar: null, active: true }, is_you: name === 'Hari', points,
+              completed: Math.round(points / 15), on_time: Math.round(points / 15), late: 0, missed: 0, skipped: 0,
+              on_time_percent: points ? 100 : null, best_streak: 3, current_streak: points ? 2 : 0, ...extra,
+            });
+            const scale = period === 'all' ? 4 : 1;
+            return {
+              ok: true, period, month: period === 'all' ? null : '2026-03',
+              entries: [row('Hari', 1, 45 * scale), row('Jijo', 2, 30 * scale), row('Arun', 2, 30 * scale),
+                row('Kim', 4, 15 * scale, { roommate: { roommate_id: 'id-Kim', name: 'Kim', avatar: null, active: false } })],
+            };
+          }
+          // Photos: a stored upload comes back as it was sent; anything else is a small generated JPEG, so images really render.
+          if (name === 'attachCleaningPhoto' && !Object.prototype.hasOwnProperty.call(window.__mock.responses, name)) {
+            window.__mock.photos[args[0].log_id] = args[0].photo;
+            return { ok: true, log_id: args[0].log_id };
+          }
+          if (name === 'getCleaningPhoto' && !Object.prototype.hasOwnProperty.call(window.__mock.responses, name)) {
+            if (!window.__mock.photos[args[0].log_id]) {
+              const canvas = document.createElement('canvas');
+              canvas.width = 120;
+              canvas.height = 90;
+              const context = canvas.getContext('2d');
+              context.fillStyle = '#e0b030';
+              context.fillRect(0, 0, 120, 90);
+              context.fillStyle = '#222';
+              context.fillRect(20, 20, 50, 40);
+              window.__mock.photos[args[0].log_id] = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+            }
+            return { ok: true, mime_type: 'image/jpeg', data: window.__mock.photos[args[0].log_id] };
+          }
+          if (name === 'deleteCleaningPhoto' && !Object.prototype.hasOwnProperty.call(window.__mock.responses, name)) {
+            delete window.__mock.photos[args[0].log_id];
+            return { ok: true };
+          }
+          if (name === 'setMyAvatar' && !Object.prototype.hasOwnProperty.call(window.__mock.responses, name)) {
+            window.__mock.avatars[window.__mock.viewer.roommate_id] = args[0].avatar;
+            return { ok: true, avatar: args[0].avatar };
           }
           if (name === 'adminListAccounts') return window.__mock.accounts;
           if (name === 'listSwaps' && !Object.prototype.hasOwnProperty.call(window.__mock.responses, name)) return window.__mock.swaps;

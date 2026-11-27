@@ -29,6 +29,12 @@ const HOUSEHOLD = {
   exportCleaningHistory: () => ({}),
   listSwaps: () => ({}),
   listVacations: () => ({}),
+  getLeaderboard: () => ({ period: 'all' }),
+  attachCleaningPhoto: () => ({ log_id: ID, photo: '/9j/2Q==' }),
+  getCleaningPhoto: () => ({ log_id: ID }),
+  deleteCleaningPhoto: () => ({ log_id: ID }),
+  getMemberProfile: () => ({ roommate_id: SAM }),
+  setMyAvatar: () => ({ avatar: 'sun' }),
   markCleaned: () => ({ rotation_id: ID, due_at: '2026-01-18T23:00:00.000Z' }),
   requestSwap: () => ({ your_due_at: '2026-01-18T23:00:00.000Z', partner_id: ID, their_due_at: '2026-01-25T23:00:00.000Z' }),
   acceptSwap: () => ({ swap_id: ID }),
@@ -163,7 +169,8 @@ test('household functions refuse a request that names who is acting, and take id
     const spreadsheet = database();
     const project = projectFor(spreadsheet);
     const before = spreadsheet.snapshot();
-    const result = plain(project.get(name)({ token: sessionToken(project, ALEX), ...HOUSEHOLD[name](), roommate_id: SAM }));
+    const actor = name === 'getMemberProfile' ? { acting_as: SAM } : { roommate_id: SAM }; // getMemberProfile's own roommate_id names the person looked at
+    const result = plain(project.get(name)({ token: sessionToken(project, ALEX), ...HOUSEHOLD[name](), ...actor }));
     assert.equal(code(result), 'INVALID_REQUEST', name);
     assert.equal(spreadsheet.snapshot(), before, name);
   }

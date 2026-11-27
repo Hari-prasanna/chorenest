@@ -54,10 +54,17 @@
     <dialog id="vacation-dialog" class="dialog dialog-wide" aria-labelledby="vacation-title"></dialog>
     <dialog id="admin-dialog" class="dialog dialog-wide" aria-labelledby="admin-title"></dialog>
     <dialog id="swap-dialog" class="dialog dialog-wide" aria-labelledby="swap-title"></dialog>
+    <dialog id="member-dialog" class="dialog dialog-wide" aria-labelledby="member-title"></dialog>
+    <dialog id="photo-dialog" class="dialog dialog-wide" aria-labelledby="photo-title"></dialog>
+    <input type="file" id="photo-camera" accept="image/*" capture="environment" hidden>
+    <input type="file" id="photo-gallery" accept="image/*" hidden>
     <?!= include_('frontend/ScheduleView') ?>
     <?!= include_('frontend/VacationView') ?>
     <?!= include_('frontend/HistoryView') ?>
+    <?!= include_('frontend/LeaderboardView') ?>
     <?!= include_('frontend/SwapView') ?>
+    <?!= include_('frontend/MemberView') ?>
+    <?!= include_('frontend/PhotoView') ?>
     <?!= include_('frontend/Session') ?>
     <?!= include_('frontend/LoginView') ?>
     <?!= include_('frontend/AdminView') ?>

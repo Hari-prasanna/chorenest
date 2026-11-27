@@ -7,6 +7,7 @@ const vacationDialog = document.getElementById('vacation-dialog');
 const profileDialog = document.getElementById('profile-dialog');
 const adminDialog = document.getElementById('admin-dialog');
 const swapDialog = document.getElementById('swap-dialog');
+const memberDialog = document.getElementById('member-dialog');
 const profileButton = document.getElementById('profile-button');
 const betaNotice = document.getElementById('beta-notice');
 const tabsElement = document.getElementById('tabs');
@@ -56,6 +57,16 @@ let historyPage = 1;
 let historyRequestId = 0; // an older answer never replaces a newer one
 let historyExporting = false;
 let historyNotice = null;
+// History tab sections: 'log' (the table) or 'league' (the leaderboard, loaded when first opened, then again once stale).
+let historySection = 'log';
+let leagueData = null;
+let leagueStatus = 'idle'; // idle | loading | ready | error | network
+let leaguePeriod = LEAGUE_DEFAULT_PERIOD;
+let leagueLoadedAt = 0;
+let leagueRequestId = 0;
+// Member profile dialog: { roommateId, name, status, data, picking, busy, notice } while open.
+let member = null;
+let memberRequestId = 0; // an older answer never replaces a newer one
 // Admin section: the account list and the one open action (a form, a confirmation or a one-time password).
 let adminAccounts = null;
 let adminStatus = 'idle'; // idle | loading | ready | error | network
@@ -128,6 +139,17 @@ function resetSignedInState() {
   pendingClean = null;
   saving = false;
   notice = null;
+  member = null;
+  memberRequestId++;
+  memberDialog.innerHTML = '';
+  setAvatarDirectory([]);
+  photoPrompt = null;
+  photo = null;
+  photoRequestId++;
+  photoDialog.innerHTML = '';
+  Object.keys(photoCache).forEach(function (key) {
+    delete photoCache[key];
+  });
   vacations = null;
   vacationStatus = 'idle';
   vacationNotice = null;
@@ -142,6 +164,11 @@ function resetSignedInState() {
   historyRequestId++;
   historyExporting = false;
   historyNotice = null;
+  historySection = 'log';
+  leagueData = null;
+  leagueStatus = 'idle';
+  leaguePeriod = LEAGUE_DEFAULT_PERIOD;
+  leagueRequestId++;
   panels.history.innerHTML = '';
   swapData = null;
   swapStatus = 'idle';
@@ -156,7 +183,7 @@ function resetSignedInState() {
 }
 
 function closeDialogs() {
-  [dialogElement, vacationDialog, profileDialog].forEach(function (dialog) {
+  [dialogElement, vacationDialog, profileDialog, memberDialog, photoDialog].forEach(function (dialog) {
     if (dialog.open) dialog.close();
   });
   closeAdminDialog();
@@ -278,9 +305,12 @@ function showResult(result, quiet) {
   // A quiet refresh keeps the page as it is unless a good schedule arrives.
   if (quiet && !isValidSchedule(result)) return;
   currentSchedule = isValidSchedule(result) ? result : null;
-  if (currentSchedule) loadedAt = Date.now();
+  if (currentSchedule) {
+    loadedAt = Date.now();
+    setAvatarDirectory(currentSchedule.roommates);
+  }
   try {
-    show(renderResult(result, viewerId(), notice, awayView()), false);
+    show(renderResult(result, viewerId(), notice, awayView(), renderPhotoPrompt(photoPrompt)), false);
   } catch (error) {
     show(renderProblem('UNEXPECTED_RESPONSE'), false);
   }
@@ -318,7 +348,8 @@ function selectTab(tab) {
   if (tab === 'schedule' && currentSchedule && !saving && Date.now() - loadedAt > STALE_AFTER_MS) loadSchedule();
   if (tab === 'vacation' && vacationStatus === 'ready' && !vacationBusy && Date.now() - vacationsLoadedAt > STALE_AFTER_MS) loadVacations();
   if (tab === 'swaps' && (swapStatus === 'idle' || (swapStatus === 'ready' && !swapBusy && Date.now() - swapsLoadedAt > STALE_AFTER_MS))) loadSwaps();
-  if (tab === 'history' && (historyStatus === 'idle' || (historyStatus === 'ready' && Date.now() - historyLoadedAt > STALE_AFTER_MS))) loadHistory();
+  if (tab === 'history' && historySection === 'league') openLeagueIfNeeded();
+  else if (tab === 'history' && (historyStatus === 'idle' || (historyStatus === 'ready' && Date.now() - historyLoadedAt > STALE_AFTER_MS))) loadHistory();
 }
 
 function showBetaNoticeOnce() {
@@ -365,6 +396,7 @@ function openConfirm() {
 function finishClean(result) {
   saving = false;
   if (historyStatus !== 'loading') historyStatus = 'idle'; // the next History visit shows the new record
+  if (leagueStatus !== 'loading') leagueStatus = 'idle'; // and the league the new points
   pendingClean = null;
   notice = result;
   dialogElement.close();
@@ -383,6 +415,8 @@ function submitClean() {
     .withSuccessHandler(function (result) {
       if (epoch !== sessionEpoch) return;
       if (handleSessionRefusal(result)) return;
+      // The cleaning is saved. A photo is only ever an optional offer, with no effect on what was just recorded.
+      if (result && result.ok === true && typeof result.log_id === 'string' && LOG_ID_PATTERN.test(result.log_id)) photoPrompt = { logId: result.log_id };
       finishClean(cleanNotice(result, name));
     })
     .withFailureHandler(function () {
@@ -552,11 +586,447 @@ function finishSwapDialog() {
   if (!swapBusy) closeSwapDialog();
 }
 
+// ---------- member profiles and avatars (the server checks the session; avatars can only be changed for yourself) ----------
+
+function renderMemberView() {
+  if (member) memberDialog.innerHTML = renderMemberDialog(member);
+}
+
+function showMemberDialog() {
+  renderMemberView();
+  if (!memberDialog.open) {
+    memberDialog.showModal();
+    return;
+  }
+  const target = memberDialog.querySelector ? memberDialog.querySelector('[autofocus]') : null;
+  if (target && target.focus) target.focus();
+}
+
+function closeMember() {
+  member = null;
+  memberRequestId++;
+  memberDialog.innerHTML = '';
+  if (memberDialog.open) memberDialog.close();
+}
+
+// Only someone in the household list (or yourself) can be opened; the server decides what is shown.
+function openMember(roommateId) {
+  const known = (currentSchedule && currentSchedule.roommates.some(function (roommate) {
+    return roommate.roommate_id === roommateId;
+  })) || (viewer && roommateId === viewerId()) || (leagueData && leagueData.entries.some(function (entry) {
+    return entry.roommate.roommate_id === roommateId && entry.roommate.active;
+  }));
+  if (!known) return;
+  if (profileDialog.open) profileDialog.close();
+  const listed = (currentSchedule && currentSchedule.roommates.filter(function (roommate) {
+    return roommate.roommate_id === roommateId;
+  })[0]) || (leagueData && leagueData.entries.filter(function (entry) {
+    return entry.roommate.roommate_id === roommateId;
+  }).map(function (entry) {
+    return entry.roommate;
+  })[0]);
+  member = { roommateId: roommateId, name: listed ? listed.name : viewer ? viewer.name : '', status: 'loading', data: null, picking: false, busy: false, notice: null, gallery: { status: 'idle', photos: {} } };
+  showMemberDialog();
+  loadMember();
+}
+
+function loadMember() {
+  if (!member) return;
+  const current = member;
+  current.status = 'loading';
+  renderMemberView();
+  const epoch = sessionEpoch;
+  const requestId = ++memberRequestId;
+  google.script.run
+    .withSuccessHandler(function (result) {
+      if (epoch !== sessionEpoch || requestId !== memberRequestId || member !== current || handleSessionRefusal(result)) return;
+      current.data = isValidMember(result) && result.member.roommate_id === current.roommateId ? result : null;
+      current.status = current.data ? 'ready' : 'error';
+      if (current.data) setAvatarFor(current.roommateId, current.data.member.avatar);
+      showMemberDialog();
+    })
+    .withFailureHandler(function () {
+      if (epoch !== sessionEpoch || requestId !== memberRequestId || member !== current) return;
+      current.data = null;
+      current.status = 'network';
+      showMemberDialog();
+    })
+    .getMemberProfile({ token: sessionToken(), roommate_id: current.roommateId });
+}
+
+// A pick (or "Initial", which is '') is for the signed-in roommate only: the request carries no roommate at all.
+function pickAvatar(avatarId) {
+  if (!member || member.busy || member.status !== 'ready' || !member.data.member.is_you) return;
+  if (avatarId !== '' && !avatarSpec(avatarId)) return;
+  const current = member;
+  current.busy = true;
+  current.notice = null;
+  renderMemberView();
+  const epoch = sessionEpoch;
+  const finish = function (notice, changedTo) {
+    current.busy = false;
+    current.notice = notice;
+    if (changedTo !== undefined) {
+      current.picking = false;
+      current.data.member.avatar = changedTo;
+      setAvatarFor(current.roommateId, changedTo);
+      refreshAvatars();
+    }
+    if (member === current) showMemberDialog();
+  };
+  google.script.run
+    .withSuccessHandler(function (result) {
+      if (epoch !== sessionEpoch || handleSessionRefusal(result)) return;
+      if (result && result.ok === true) finish({ kind: 'success', text: 'Avatar updated.' }, avatarId === '' ? null : avatarId);
+      else finish({ kind: 'error', text: memberErrorMessage(errorCodeOf(result)) });
+    })
+    .withFailureHandler(function () {
+      if (epoch === sessionEpoch) finish({ kind: 'error', text: MEMBER_SAVE_FALLBACK });
+    })
+    .setMyAvatar({ token: sessionToken(), avatar: avatarId === '' ? null : avatarId });
+}
+
+// An avatar changed: redraw what is already on screen, without asking the server again.
+function refreshAvatars() {
+  refreshProfile();
+  if (currentSchedule) {
+    show(renderResult(currentSchedule, viewerId(), null, awayView(), renderPhotoPrompt(photoPrompt)), false);
+    panels.schedule.setAttribute('data-settled', 'true');
+  }
+  renderVacationPanel();
+  if (swapStatus === 'ready') renderSwapsView();
+  if (historyStatus === 'ready' || leagueStatus === 'ready') renderHistoryView();
+  if (adminStatus === 'ready') renderAdminView();
+}
+
+// ---------- the Clean League (the Leaderboard section of History; read-only) ----------
+
+function leagueView() {
+  return { status: leagueStatus === 'idle' ? 'loading' : leagueStatus, period: leaguePeriod, data: leagueData };
+}
+
+function loadLeague() {
+  leagueStatus = 'loading';
+  renderHistoryView();
+  const epoch = sessionEpoch;
+  const requestId = ++leagueRequestId;
+  google.script.run
+    .withSuccessHandler(function (result) {
+      if (epoch !== sessionEpoch || requestId !== leagueRequestId || handleSessionRefusal(result)) return;
+      leagueData = isValidLeaderboard(result) && result.period === leaguePeriod ? result : null;
+      leagueStatus = leagueData ? 'ready' : 'error';
+      leagueLoadedAt = Date.now();
+      if (leagueData) leagueData.entries.forEach(function (entry) {
+        setAvatarFor(entry.roommate.roommate_id, entry.roommate.avatar);
+      });
+      renderHistoryView();
+    })
+    .withFailureHandler(function () {
+      if (epoch !== sessionEpoch || requestId !== leagueRequestId) return;
+      leagueData = null;
+      leagueStatus = 'network';
+      renderHistoryView();
+    })
+    .getLeaderboard({ token: sessionToken(), period: leaguePeriod });
+}
+
+function openLeagueIfNeeded() {
+  if (leagueStatus === 'idle' || (leagueStatus === 'ready' && Date.now() - leagueLoadedAt > STALE_AFTER_MS)) loadLeague();
+}
+
+// ---------- cleaning photos (optional; the server checks the session, the cleaner and the rights on every call) ----------
+
+const photoDialog = document.getElementById('photo-dialog');
+const photoCamera = document.getElementById('photo-camera');
+const photoGallery = document.getElementById('photo-gallery');
+const LOG_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+let photoPrompt = null; // { logId }: the offer shown on Schedule after a cleaning, until dismissed or used
+let photo = null; // the open photo dialog: { mode, logId, title, stage, preview, base64, bytes, width, height, error, canDelete, confirmingDelete }
+let photoRequestId = 0;
+const photoCache = {}; // log_id -> data URI of photos already fetched this session (cleared on sign-out and on change)
+
+function photoSlot() {
+  return document.getElementById('photo-prompt-slot');
+}
+
+function renderPhotoPromptSlot() {
+  const slot = currentSchedule ? photoSlot() : null;
+  if (slot) slot.innerHTML = renderPhotoPrompt(photoPrompt);
+}
+
+function renderPhotoView() {
+  if (photo) photoDialog.innerHTML = renderPhotoDialog(photo);
+}
+
+function showPhotoDialog() {
+  renderPhotoView();
+  if (!photoDialog.open) {
+    photoDialog.showModal();
+    return;
+  }
+  const target = photoDialog.querySelector ? photoDialog.querySelector('[autofocus]') : null;
+  if (target && target.focus) target.focus();
+}
+
+function closePhoto() {
+  photo = null;
+  photoRequestId++;
+  photoDialog.innerHTML = '';
+  if (photoDialog.open) photoDialog.close();
+}
+
+/** The history or profile entry for a log, from what is loaded, for its caption and the rights the server reported. */
+function findLogEntry(logId) {
+  const fromHistory = ((historyData && historyData.entries) || []).filter(function (entry) {
+    return entry.log_id === logId;
+  })[0];
+  if (fromHistory) return { weekend: fromHistory, name: displayName(fromHistory.roommate), flags: fromHistory };
+  const fromProfile = member && member.data ? member.data.recent.filter(function (entry) {
+    return entry.log_id === logId;
+  })[0] : null;
+  return fromProfile ? { weekend: fromProfile, name: member.data.member.name, flags: fromProfile } : null;
+}
+
+function photoTitle(found) {
+  return found ? found.name + ' · ' + formatWeekend(found.weekend) : 'Cleaning photo';
+}
+
+// "add": only for your own completed cleaning (the buttons only appear when the server said so); "view": anyone's.
+function openPhoto(mode, logId) {
+  if (!LOG_ID_PATTERN.test(String(logId)) || !viewer) return;
+  const found = findLogEntry(logId);
+  if (mode === 'add' && !(found ? found.flags.can_add_photo : photoPrompt && photoPrompt.logId === logId)) return;
+  if (mode === 'view' && found && !found.flags.has_photo) return;
+  photo = { mode: mode, logId: logId, title: photoTitle(found), stage: mode === 'add' ? 'choose' : 'loading', preview: '', base64: '', bytes: 0, width: 0, height: 0,
+    error: '', canDelete: Boolean(found && found.flags.can_delete_photo), confirmingDelete: false };
+  showPhotoDialog();
+  if (mode === 'view') loadPhoto();
+}
+
+function startPhotoFromPrompt(logId) {
+  if (!photoPrompt || photoPrompt.logId !== logId) return;
+  openPhoto('add', logId);
+}
+
+function dismissPhotoPrompt() {
+  photoPrompt = null;
+  renderPhotoPromptSlot();
+}
+
+/** Fetches one photo on demand (or from this session's cache). done(dataUri | null, code). */
+function fetchPhoto(logId, done) {
+  if (Object.prototype.hasOwnProperty.call(photoCache, logId)) return done(photoCache[logId], null);
+  const epoch = sessionEpoch;
+  google.script.run
+    .withSuccessHandler(function (result) {
+      if (epoch !== sessionEpoch || handleSessionRefusal(result)) return;
+      if (isValidPhotoAnswer(result)) {
+        photoCache[logId] = 'data:image/jpeg;base64,' + result.data;
+        done(photoCache[logId], null);
+      } else {
+        done(null, errorCodeOf(result) || 'PHOTO_STORAGE_FAILED');
+      }
+    })
+    .withFailureHandler(function () {
+      if (epoch === sessionEpoch) done(null, 'PHOTO_STORAGE_FAILED');
+    })
+    .getCleaningPhoto({ token: sessionToken(), log_id: logId });
+}
+
+function loadPhoto() {
+  if (!photo || photo.mode !== 'view') return;
+  const current = photo;
+  const requestId = ++photoRequestId;
+  current.stage = 'loading';
+  renderPhotoView();
+  fetchPhoto(current.logId, function (src, code) {
+    if (photo !== current || requestId !== photoRequestId) return;
+    current.preview = src || '';
+    current.stage = src ? 'ready' : 'error';
+    current.error = src ? '' : photoMessage(code);
+    showPhotoDialog();
+  });
+}
+
+function pickPhoto(input) {
+  if (!photo || photo.mode !== 'add' || (photo.stage !== 'choose' && photo.stage !== 'error' && photo.stage !== 'preview')) return;
+  input.click();
+}
+
+// Camera or gallery gave a file: shrink it here, then show a preview. Nothing is sent yet.
+function photoFileChosen(input) {
+  const file = input.files && input.files[0];
+  input.value = '';
+  if (!file || !photo || photo.mode !== 'add') return;
+  const current = photo;
+  current.stage = 'working';
+  current.error = '';
+  renderPhotoView();
+  const requestId = ++photoRequestId;
+  compressPhoto(file, function (error, result) {
+    if (photo !== current || requestId !== photoRequestId) return;
+    if (error) {
+      current.stage = 'choose';
+      current.error = error.code === 'PHOTO_TOO_LARGE' ? 'That photo is too big even after shrinking. Try another one.' : 'We couldn’t read that photo. Try a JPEG or PNG.';
+    } else {
+      current.stage = 'preview';
+      current.preview = result.dataUrl;
+      current.base64 = result.base64;
+      current.bytes = result.bytes;
+      current.width = result.width;
+      current.height = result.height;
+    }
+    showPhotoDialog();
+  });
+}
+
+function discardPhoto() {
+  if (!photo || photo.mode !== 'add' || photo.stage === 'uploading' || photo.stage === 'working') return;
+  photo.stage = 'choose';
+  photo.preview = '';
+  photo.base64 = '';
+  photo.error = '';
+  showPhotoDialog();
+}
+
+// An upload is separate from the cleaning, which is already saved: a failure here changes nothing else.
+function uploadPhoto() {
+  if (!photo || photo.mode !== 'add' || !photo.base64 || (photo.stage !== 'preview' && photo.stage !== 'error')) return;
+  const current = photo;
+  current.stage = 'uploading';
+  renderPhotoView();
+  const epoch = sessionEpoch;
+  const fail = function (text) {
+    if (photo !== current) return;
+    current.stage = 'error';
+    current.error = text;
+    showPhotoDialog();
+  };
+  google.script.run
+    .withSuccessHandler(function (result) {
+      if (epoch !== sessionEpoch || handleSessionRefusal(result)) return;
+      if (result && result.ok === true) {
+        photoChanged(current.logId, 'Photo added. Nicely done.');
+        return;
+      }
+      fail(photoMessage(errorCodeOf(result)));
+    })
+    .withFailureHandler(function () {
+      if (epoch === sessionEpoch) fail('We couldn’t confirm that the photo arrived. Check your connection, then try again. Your cleaning is safe.');
+    })
+    .attachCleaningPhoto({ token: sessionToken(), log_id: current.logId, photo: current.base64 });
+}
+
+function askDeletePhoto() {
+  if (!photo || photo.mode !== 'view' || photo.stage !== 'ready' || !photo.canDelete) return;
+  photo.confirmingDelete = true;
+  showPhotoDialog();
+}
+
+function deletePhoto() {
+  if (!photo || photo.mode !== 'view' || photo.stage !== 'ready' || !photo.canDelete || !photo.confirmingDelete) return;
+  const current = photo;
+  current.stage = 'deleting';
+  renderPhotoView();
+  const epoch = sessionEpoch;
+  const fail = function (text) {
+    if (photo !== current) return;
+    current.stage = 'ready';
+    current.confirmingDelete = false;
+    current.error = text;
+    showPhotoDialog();
+  };
+  google.script.run
+    .withSuccessHandler(function (result) {
+      if (epoch !== sessionEpoch || handleSessionRefusal(result)) return;
+      if (result && result.ok === true) {
+        photoChanged(current.logId, 'Photo deleted.');
+        return;
+      }
+      const code = errorCodeOf(result);
+      if (code === 'PHOTO_NOT_FOUND') photoChanged(current.logId, 'That photo was already gone.');
+      else fail(photoMessage(code));
+    })
+    .withFailureHandler(function () {
+      if (epoch === sessionEpoch) fail('We couldn’t confirm that the photo was deleted. Try again.');
+    })
+    .deleteCleaningPhoto({ token: sessionToken(), log_id: current.logId });
+}
+
+// A photo was added or removed: close the dialog, forget what was cached, and refresh what is on screen.
+function photoChanged(logId, text) {
+  delete photoCache[logId];
+  if (photoPrompt && photoPrompt.logId === logId) dismissPhotoPrompt();
+  closePhoto();
+  historyStatus = historyStatus === 'loading' ? 'loading' : 'idle';
+  if (!panels.history.hidden && historySection === 'log') loadHistory();
+  if (member && member.status === 'ready') {
+    member.gallery = { status: 'idle', photos: {} };
+    member.notice = { kind: 'success', text: text };
+    loadMember();
+  }
+}
+
+// "Show photos" on a profile: fetch that roommate's few recent photos now, not before.
+function loadGallery() {
+  if (!member || member.status !== 'ready' || (member.gallery && member.gallery.status !== 'idle')) return;
+  const current = member;
+  const ids = member.data.recent.filter(function (entry) {
+    return entry.has_photo && LOG_ID_PATTERN.test(entry.log_id);
+  }).map(function (entry) {
+    return entry.log_id;
+  });
+  current.gallery = { status: ids.length ? 'loading' : 'ready', photos: {} };
+  showMemberDialog();
+  let waiting = ids.length;
+  ids.forEach(function (logId) {
+    fetchPhoto(logId, function (src) {
+      if (member !== current) return;
+      current.gallery.photos[logId] = src;
+      waiting--;
+      if (waiting === 0) current.gallery.status = 'ready';
+      showMemberDialog();
+    });
+  });
+}
+
+photoCamera.addEventListener('change', function () {
+  photoFileChosen(photoCamera);
+});
+
+photoGallery.addEventListener('change', function () {
+  photoFileChosen(photoGallery);
+});
+
+photoDialog.addEventListener('click', function (event) {
+  const action = actionOf(event);
+  if (action === 'photo-camera') pickPhoto(photoCamera);
+  if (action === 'photo-gallery') pickPhoto(photoGallery);
+  if (action === 'photo-upload') uploadPhoto();
+  if (action === 'photo-discard') discardPhoto();
+  if (action === 'photo-retry') loadPhoto();
+  if (action === 'photo-delete') askDeletePhoto();
+  if (action === 'photo-delete-confirm') deletePhoto();
+  if (action === 'photo-keep' && photo) {
+    photo.confirmingDelete = false;
+    showPhotoDialog();
+  }
+  if (action === 'photo-close' && !(photo && (photo.stage === 'uploading' || photo.stage === 'deleting' || photo.stage === 'working'))) closePhoto();
+});
+
+// Escape closes the dialog, except while a photo is being worked on or sent.
+photoDialog.addEventListener('cancel', function (event) {
+  if (event.preventDefault) event.preventDefault();
+  if (!(photo && (photo.stage === 'uploading' || photo.stage === 'deleting' || photo.stage === 'working'))) closePhoto();
+});
+
 // ---------- history (read-only) ----------
 
 function renderHistoryView() {
   const data = historyData;
   panels.history.innerHTML = renderHistoryPanel({
+    section: historySection,
+    league: leagueView(),
     status: historyStatus === 'idle' ? 'loading' : historyStatus,
     range: historyRange,
     page: data ? data.page : historyPage,
@@ -1131,6 +1601,9 @@ appElement.addEventListener('click', function (event) {
   if (action === 'retry') loadSchedule();
   if (action === 'mark-cleaned') openConfirm();
   if (action === 'retry-vacations') retryVacations();
+  if (action === 'open-member') openMember(carrier(event, '[data-action]').getAttribute('data-roommate-id'));
+  if (action === 'photo-start') startPhotoFromPrompt(carrier(event, '[data-action]').getAttribute('data-log-id'));
+  if (action === 'photo-dismiss') dismissPhotoPrompt();
 });
 
 panels.vacation.addEventListener('click', function (event) {
@@ -1190,6 +1663,28 @@ panels.history.addEventListener('click', function (event) {
     loadHistory();
   } else if (action === 'download-history') {
     exportHistory();
+  } else if (action === 'history-section') {
+    const section = carrier(event, '[data-section]');
+    const picked = section ? section.getAttribute('data-section') : null;
+    if ((picked === 'log' || picked === 'league') && picked !== historySection) {
+      historySection = picked;
+      if (picked === 'league') openLeagueIfNeeded();
+      else if (historyStatus === 'idle') loadHistory();
+      renderHistoryView();
+    }
+  } else if (action === 'league-period') {
+    const period = carrier(event, '[data-period]');
+    const picked = period ? period.getAttribute('data-period') : null;
+    if (picked && picked !== leaguePeriod && LEAGUE_PERIODS.some(function (option) { return option.id === picked; })) {
+      leaguePeriod = picked;
+      loadLeague();
+    }
+  } else if (action === 'retry-league') {
+    loadLeague();
+  } else if (action === 'open-member') {
+    openMember(carrier(event, '[data-action]').getAttribute('data-roommate-id'));
+  } else if (action === 'view-photo' || action === 'add-photo') {
+    openPhoto(action === 'view-photo' ? 'view' : 'add', carrier(event, '[data-action]').getAttribute('data-log-id'));
   }
 });
 
@@ -1210,7 +1705,33 @@ profileDialog.addEventListener('click', function (event) {
   const action = actionOf(event);
   if (action === 'close-profile') profileDialog.close();
   if (action === 'open-admin') openAdmin();
+  if (action === 'open-member') openMember(carrier(event, '[data-action]').getAttribute('data-roommate-id'));
   if (action === 'sign-out') signOut();
+});
+
+memberDialog.addEventListener('click', function (event) {
+  const action = actionOf(event);
+  const source = carrier(event, '[data-action]');
+  if (action === 'close-member' && !(member && member.busy)) closeMember();
+  if (action === 'retry-member') loadMember();
+  if (action === 'member-avatar' && member && member.status === 'ready' && member.data.member.is_you) {
+    member.picking = true;
+    member.notice = null;
+    showMemberDialog();
+  }
+  if (action === 'member-back' && member && !member.busy) {
+    member.picking = false;
+    showMemberDialog();
+  }
+  if (action === 'pick-avatar') pickAvatar(source.getAttribute('data-avatar'));
+  if (action === 'member-gallery') loadGallery();
+  if (action === 'view-photo' || action === 'add-photo') openPhoto(action === 'view-photo' ? 'view' : 'add', source.getAttribute('data-log-id'));
+});
+
+// Escape closes the dialog (while saving an avatar it stays open).
+memberDialog.addEventListener('cancel', function (event) {
+  if (event.preventDefault) event.preventDefault();
+  if (!(member && member.busy)) closeMember();
 });
 
 panels.admin.addEventListener('click', function (event) {

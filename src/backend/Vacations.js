@@ -84,6 +84,18 @@ function listVacations(request) {
       baseline = baseline || currentTurnKey_(records, null, null, now);
       return keepsCurrentTurn_(records, row, now, baseline);
     };
+    let current = null; // the current turn as it is, worked out once and only if an upcoming vacation needs it
+    const person = function (roommateId) {
+      return { roommate_id: roommateId, name: names[roommateId] || null };
+    };
+    // An upcoming vacation may still hand the open turn to someone else when deleted: say who, so the page can explain it.
+    const turnChange = function (row, canDelete) {
+      if (!canDelete || row.start_date.getTime() <= now.getTime()) return null;
+      current = current || turnWithout_(records, null, now);
+      const after = turnWithout_(records, row, now);
+      if (after.assignee_id === current.assignee_id && after.due_at.getTime() === current.due_at.getTime()) return null;
+      return { from: person(current.assignee_id), to: person(after.assignee_id), weekend_starts_at: after.weekend_starts_at.toISOString(), due_at: after.due_at.toISOString() };
+    };
 
     const vacations = records.VACATIONS
       .filter(function (row) {
@@ -95,7 +107,7 @@ function listVacations(request) {
       })
       .slice(0, VACATION_LIST_LIMIT)
       .map(function (row) {
-        return vacationToJson_(row, names[row.roommate_id], now, turns, skippedLogs, deletable);
+        return vacationToJson_(row, names[row.roommate_id], now, turns, skippedLogs, deletable, turnChange);
       });
     return { ok: true, vacations: vacations };
   } catch (error) {
@@ -358,6 +370,18 @@ function cancelUnderLock_(claim) {
   }
 }
 
+/** The current turn as the engine works it out with `vacation` left out (or as it is, for null). */
+function turnWithout_(records, vacation, now) {
+  const vacations = records.VACATIONS.filter(function (row) {
+    return row !== vacation;
+  });
+  try {
+    return getCurrentTurn_(toRotationData_(Object.assign({}, records, { VACATIONS: vacations })), now);
+  } catch (error) {
+    throw error.code ? error : appError_('ROTATION_DATA_INVALID', String(error.message));
+  }
+}
+
 /** Whether the current turn is the same with `vacation` removed; `baseline` is currentTurnKey_ with nothing replaced. */
 function keepsCurrentTurn_(records, vacation, now, baseline) {
   return currentTurnKey_(records, vacation, Object.assign({}, vacation, { cancelled_at: now }), now) === baseline;
@@ -380,7 +404,7 @@ function weekendsOfVacation_(startMs, endMs, nowMs) {
   return weekends;
 }
 
-function vacationToJson_(row, name, now, turns, skippedLogs, deletable) {
+function vacationToJson_(row, name, now, turns, skippedLogs, deletable, turnChange) {
   const start = row.start_date.getTime();
   const end = row.return_date.getTime();
   const returned = end <= now.getTime();
@@ -404,6 +428,7 @@ function vacationToJson_(row, name, now, turns, skippedLogs, deletable) {
     return { weekend_starts_at: new Date(weekend.startsAt).toISOString(), due_at: new Date(weekend.dueAt).toISOString(), status: status };
   });
   const id = row.vacation_id ? String(row.vacation_id) : null;
+  const canDelete = deletable(row);
   return {
     vacation_id: id,
     roommate_id: row.roommate_id,
@@ -411,7 +436,8 @@ function vacationToJson_(row, name, now, turns, skippedLogs, deletable) {
     start_date: row.start_date.toISOString(),
     return_date: row.return_date.toISOString(),
     state: returned ? 'returned' : start <= now.getTime() ? 'away' : 'upcoming',
-    cancellable: deletable(row), // whether its owner may delete it (cancelVacation)
+    cancellable: canDelete, // whether its owner may delete it (cancelVacation)
+    delete_changes_turn: turnChange(row, canDelete), // who would clean the open turn instead after a delete, or null
     weekends: weekends,
   };
 }

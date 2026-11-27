@@ -31,6 +31,7 @@ function renderProfileDialog(viewer) {
   return '<div class="dialog-body"><h2 id="profile-title">Profile</h2>' +
     '<div class="profile-card">' + avatar(viewer, 'md') + '<div><p class="name">' + escapeHtml(displayName(viewer)) + '</p>' +
     '<p class="profile-role"><span class="badge badge-role">' + escapeHtml(roleLabel(viewer)) + '</span> · Signed in</p></div></div>' +
+    '<p class="profile-admin"><button class="button button-quiet profile-admin-button" type="button" data-action="open-member" data-roommate-id="' + escapeHtml(viewer.roommate_id) + '">' + icon('person') + '<span>My profile and avatar</span></button></p>' +
     (viewer.role === 'ADMIN'
       ? '<p class="profile-admin"><button class="button button-quiet profile-admin-button" type="button" data-action="open-admin">' + icon('shield') + '<span>Manage household</span></button></p>'
       : '') +

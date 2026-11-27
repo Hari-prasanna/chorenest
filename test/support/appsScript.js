@@ -133,6 +133,7 @@ function loadProject({ properties = {}, spreadsheets = [], activeUser = OWNER, n
   const triggers = [];
   const triggerObject = (trigger) => ({ getUniqueId: () => trigger.uid, getHandlerFunction: () => trigger.handler });
   const scriptApp = {
+    getOAuthToken: () => 'test-oauth-token',
     WeekDay: { MONDAY: 'MONDAY', FRIDAY: 'FRIDAY', SATURDAY: 'SATURDAY', SUNDAY: 'SUNDAY' },
     getProjectTriggers: () => triggers.map(triggerObject),
     deleteTrigger: (object) => {
@@ -281,6 +282,11 @@ function fakeUtilities() {
     computeHmacSha256Signature: (value, key) => {
       utilities.hmacCalls += 1;
       return toSigned(crypto.createHmac('sha256', toBuffer(key)).update(toBuffer(value)).digest());
+    },
+    base64Encode: (data) => toBuffer(data).toString('base64'),
+    base64Decode: (text) => {
+      if (typeof text !== 'string' || text.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(text)) throw new Error('Invalid base64.');
+      return toSigned(Buffer.from(text, 'base64'));
     },
     base64EncodeWebSafe: (data) => toBuffer(data).toString('base64').replace(/\+/g, '-').replace(/\//g, '_'),
     base64DecodeWebSafe: (text) => {

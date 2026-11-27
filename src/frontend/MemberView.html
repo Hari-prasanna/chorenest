@@ -1,0 +1,110 @@
+<script>
+// The member profile dialog (opened from a "Coming up" card or from Profile): recent cleanings, completed turns, on-time
+// rate and next assignment, plus the avatar picker on your own profile. Data in, HTML strings out; no DOM access and no
+// server calls. Statistics are worked out by the server from the cleaning records; this page only shows them.
+const MEMBER_MESSAGES = {
+  BUSY: 'Someone else is saving right now. Try again in a moment.',
+  UNKNOWN_ROOMMATE: 'That roommate isn’t on the list any more.',
+};
+const MEMBER_SAVE_FALLBACK = 'We couldn’t save that. Nothing changed, so you can try again.';
+
+function memberErrorMessage(code) {
+  return Object.prototype.hasOwnProperty.call(MEMBER_MESSAGES, code) ? MEMBER_MESSAGES[code] : MEMBER_SAVE_FALLBACK;
+}
+
+function isValidMember(result) {
+  const whole = function (value) {
+    return typeof value === 'number' && value >= 0 && value === Math.floor(value);
+  };
+  const turnOk = function (turn) {
+    return Boolean(turn) && !isNaN(Date.parse(turn.weekend_starts_at)) && !isNaN(Date.parse(turn.due_at));
+  };
+  return Boolean(result) && result.ok === true && Boolean(result.member) && typeof result.member.roommate_id === 'string' &&
+    typeof result.member.name === 'string' && typeof result.member.is_you === 'boolean' &&
+    Boolean(result.stats) && whole(result.stats.completed) && whole(result.stats.on_time) &&
+    (result.stats.on_time_percent === null || (whole(result.stats.on_time_percent) && result.stats.on_time_percent <= 100)) &&
+    Array.isArray(result.recent) && result.recent.every(function (entry) {
+      return turnOk(entry) && typeof entry.outcome === 'string' && !isNaN(Date.parse(entry.resolved_at));
+    }) && (result.next === null || (turnOk(result.next) && typeof result.next.current === 'boolean'));
+}
+
+function renderMemberStat(label, value, hint) {
+  return '<div class="member-stat"><dt>' + escapeHtml(label) + '</dt><dd>' + escapeHtml(value) + '</dd>' +
+    (hint ? '<span class="member-stat-hint">' + escapeHtml(hint) + '</span>' : '') + '</div>';
+}
+
+function renderMemberStats(data) {
+  const stats = data.stats;
+  const next = data.next;
+  const nextHint = !next ? 'Nothing in the coming months'
+    : next.covering && next.covering.name ? 'Covering for ' + next.covering.name + ' (swap)'
+    : next.current ? 'Their turn right now' : 'Coming up';
+  return '<dl class="member-stats">' +
+    renderMemberStat('Cleanings done', String(stats.completed), stats.completed === 1 ? '1 turn' : stats.completed + ' turns') +
+    renderMemberStat('On time', stats.on_time_percent === null ? '–' : stats.on_time_percent + '%',
+      stats.on_time_percent === null ? 'No cleanings yet' : stats.on_time + ' of ' + stats.completed + ' by the deadline') +
+    renderMemberStat('Next turn', next ? formatWeekend(next) : '–', nextHint) + '</dl>';
+}
+
+function renderMemberRecent(recent) {
+  if (!recent.length) return '<p class="member-empty">No cleanings on record yet.</p>';
+  return '<ul class="member-recent">' + recent.map(function (entry) {
+    const outcome = HISTORY_OUTCOMES[entry.outcome] || HISTORY_OUTCOMES.admin_resolved;
+    return '<li><span class="member-recent-weekend">' + escapeHtml(formatWeekend(entry)) + '</span>' +
+      '<span class="member-recent-end">' + renderPhotoButtons(entry) + '<span class="badge badge-account tone-' + outcome.tone + '">' + escapeHtml(outcome.label) + '</span></span></li>';
+  }).join('') + '</ul>';
+}
+
+function renderMemberNotice(notice) {
+  return notice ? '<p class="notice notice-' + escapeHtml(notice.kind) + '" role="' + (notice.kind === 'error' ? 'alert' : 'status') + '">' + escapeHtml(notice.text) + '</p>' : '';
+}
+
+/** Your own avatar choices: the bundled avatars and "Initial" (no avatar). */
+function renderAvatarPicker(member, view) {
+  const person = { roommate_id: member.roommate_id, name: member.name };
+  const current = Object.prototype.hasOwnProperty.call(avatarDirectory, member.roommate_id) ? avatarDirectory[member.roommate_id] : '';
+  const choice = function (id, label, preview) {
+    return '<button class="avatar-choice" type="button" data-action="pick-avatar" data-avatar="' + id + '" aria-pressed="' + (id === current ? 'true' : 'false') + '"' +
+      (view.busy ? ' disabled' : '') + '>' + preview + '<span class="avatar-choice-label">' + escapeHtml(label) + '</span></button>';
+  };
+  const initial = '<span class="avatar avatar-xl tone-' + avatarTone(person) + '" aria-hidden="true">' + escapeHtml(Array.from(displayName(person))[0].toUpperCase()) + '</span>';
+  return '<div class="dialog-body dialog-scroll"><h2 id="member-title">Choose your avatar</h2>' +
+    '<p class="who-note">Everyone in the household sees it. You can change it any time.</p>' + renderMemberNotice(view.notice) +
+    '<div class="avatar-grid" role="group" aria-label="Avatars">' + AVATARS.map(function (spec) {
+      return choice(spec.id, spec.label, '<span class="avatar avatar-xl tone-' + spec.tone + '" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">' + spec.glyph + '</svg></span>');
+    }).join('') + choice('', 'Initial', initial) + '</div>' +
+    (view.busy ? '<p class="auth-status" role="status"><span class="spinner" aria-hidden="true"></span>Saving…</p>' : '') +
+    '<div class="dialog-actions dialog-actions-single"><button class="button button-quiet" type="button" data-action="member-back"' + (view.busy ? ' disabled' : '') + '>' +
+    icon('left') + '<span>Back to profile</span></button></div></div>';
+}
+
+/**
+ * view: { status: 'loading' | 'ready' | 'error' | 'network', name, data, picking, busy, notice }. `name` is shown while
+ * loading (from the card that was tapped).
+ */
+function renderMemberDialog(view) {
+  if (view.status === 'ready' && view.picking && view.data.member.is_you) return renderAvatarPicker(view.data.member, view);
+  if (view.status === 'ready') {
+    const member = view.data.member;
+    const person = { roommate_id: member.roommate_id, name: member.name };
+    return '<div class="dialog-body dialog-scroll member-profile"><div class="member-head">' + avatar(person, 'lg') +
+      '<div><h2 id="member-title" class="name">' + escapeHtml(member.name) + '</h2>' +
+      (member.is_you ? '<span class="badge badge-role">You</span>' : '') + '</div></div>' +
+      renderMemberNotice(view.notice) + renderMemberStats(view.data) +
+      '<h3 class="eyebrow section-title">' + icon('history') + 'Recent cleanings</h3>' + renderMemberRecent(view.data.recent) +
+      renderPhotoGallery(view.data.recent, view.gallery || { status: 'idle', photos: {} }) +
+      '<div class="dialog-actions' + (member.is_you ? '' : ' dialog-actions-single') + '">' +
+      (member.is_you ? '<button class="button button-quiet" type="button" data-action="member-avatar">' + icon('edit') + '<span>Change avatar</span></button>' : '') +
+      '<button class="button" type="button" data-action="close-member" autofocus>Close</button></div></div>';
+  }
+  if (view.status === 'error' || view.status === 'network') {
+    return '<div class="dialog-body"><h2 id="member-title">Couldn’t load this profile</h2><p>' +
+      (view.status === 'network' ? 'Check your connection and try again.' : 'Try again in a moment.') + '</p>' +
+      '<div class="dialog-actions"><button class="button" type="button" data-action="retry-member">Try again</button>' +
+      '<button class="button button-quiet" type="button" data-action="close-member" autofocus>Close</button></div></div>';
+  }
+  return '<div class="dialog-body dialog-scroll" role="status" aria-busy="true"><h2 id="member-title">' + escapeHtml(view.name || 'Profile') + '</h2>' +
+    '<div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div>' +
+    '<div class="dialog-actions dialog-actions-single"><button class="button button-quiet" type="button" data-action="close-member" autofocus>Close</button></div></div>';
+}
+</script>

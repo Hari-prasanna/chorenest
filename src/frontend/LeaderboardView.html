@@ -1,0 +1,115 @@
+<script>
+// "The Clean League": the Leaderboard section of the History tab. Data in, HTML strings out; no DOM access and no server
+// calls. Points, ranks and streaks come from the server (getLeaderboard); this page only shows them. A score of 0 shows
+// no rank and never reaches the podium, so nobody is crowned for doing nothing.
+const LEAGUE_PERIODS = [
+  { id: 'month', label: 'This month' },
+  { id: 'all', label: 'All time' },
+];
+const LEAGUE_DEFAULT_PERIOD = 'month';
+const LEAGUE_PODIUM_MAX_RANK = 3;
+
+function isValidLeaderboard(result) {
+  const whole = function (value) {
+    return typeof value === 'number' && value >= 0 && value === Math.floor(value);
+  };
+  return Boolean(result) && result.ok === true && LEAGUE_PERIODS.some(function (period) {
+    return period.id === result.period;
+  }) && (result.month === null || /^\d{4}-\d{2}$/.test(String(result.month))) && Array.isArray(result.entries) &&
+    result.entries.every(function (entry) {
+      return Boolean(entry) && whole(entry.rank) && entry.rank >= 1 && Boolean(entry.roommate) && typeof entry.roommate.roommate_id === 'string' &&
+        typeof entry.roommate.name === 'string' && typeof entry.roommate.active === 'boolean' && typeof entry.is_you === 'boolean' &&
+        whole(entry.points) && whole(entry.completed) && whole(entry.current_streak) && whole(entry.best_streak) &&
+        (entry.on_time_percent === null || (whole(entry.on_time_percent) && entry.on_time_percent <= 100));
+    });
+}
+
+/** A server month 'YYYY-MM' as a long month and year, in the Berlin calendar the server used. */
+function leagueMonthLabel(month) {
+  const parts = String(month).split('-');
+  return new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', month: 'long', year: 'numeric' }).format(new Date(Date.UTC(Number(parts[0]), Number(parts[1]) - 1, 1)));
+}
+
+function leaguePerson(entry) {
+  return { roommate_id: entry.roommate.roommate_id, name: entry.roommate.name };
+}
+
+function renderLeaguePeriods(period) {
+  return '<div class="filter-bar" role="group" aria-label="League period">' + LEAGUE_PERIODS.map(function (option) {
+    return '<button class="chip" type="button" data-action="league-period" data-period="' + option.id + '" aria-pressed="' + (option.id === period ? 'true' : 'false') + '">' +
+      escapeHtml(option.label) + '</button>';
+  }).join('') + '</div>';
+}
+
+// Moved-out roommates have no profile to open, so they are plain rows.
+function leagueWrap(entry, className, inner) {
+  return entry.roommate.active
+    ? '<button class="' + className + '" type="button" data-action="open-member" data-roommate-id="' + escapeHtml(entry.roommate.roommate_id) + '">' + inner + '</button>'
+    : '<div class="' + className + ' is-static">' + inner + '</div>';
+}
+
+function leagueStat(label, value) {
+  return '<span class="league-stat"><span class="league-stat-label">' + escapeHtml(label) + '</span> <span class="league-stat-value">' + escapeHtml(value) + '</span></span>';
+}
+
+function renderPodium(entries) {
+  const placed = entries.filter(function (entry) {
+    return entry.points > 0 && entry.rank <= LEAGUE_PODIUM_MAX_RANK;
+  });
+  if (!placed.length) return '';
+  return '<ol class="podium" aria-label="Top of the league">' + placed.map(function (entry) {
+    return '<li class="podium-place podium-' + entry.rank + '">' + leagueWrap(entry, 'podium-card',
+      '<span class="podium-rank">' + icon('trophy') + '<span class="visually-hidden">Rank </span><span>' + entry.rank + '</span></span>' +
+      avatar(leaguePerson(entry), 'xl') +
+      '<span class="name">' + escapeHtml(entry.roommate.name) + '</span>' +
+      '<span class="podium-points">' + entry.points + ' pts</span>') + '</li>';
+  }).join('') + '</ol>';
+}
+
+function renderStandings(entries) {
+  return '<ol class="league-list" aria-label="Standings">' + entries.map(function (entry) {
+    return '<li>' + leagueWrap(entry, 'league-row',
+      '<span class="league-rank">' + (entry.points > 0 ? entry.rank : '–') + '</span>' +
+      avatar(leaguePerson(entry), 'md') +
+      '<span class="league-main"><span class="name">' + escapeHtml(entry.roommate.name) +
+      (entry.is_you ? ' <span class="you">(you)</span>' : '') +
+      (entry.roommate.active ? '' : ' <span class="you">· moved out</span>') + '</span>' +
+      '<span class="league-stats">' + leagueStat('Done', String(entry.completed)) +
+      leagueStat('On time', entry.on_time_percent === null ? '–' : entry.on_time_percent + '%') +
+      '<span class="league-stat">' + icon('streak') + leagueStat('Streak', String(entry.current_streak)) + '</span></span></span>' +
+      '<span class="league-points"><strong>' + entry.points + '</strong> pts</span>') + '</li>';
+  }).join('') + '</ol>';
+}
+
+/**
+ * league: { status: 'loading' | 'ready' | 'error' | 'network', period, data } where data is a valid getLeaderboard answer.
+ */
+function renderLeagueBody(league) {
+  let body;
+  if (league.status === 'ready') {
+    const entries = league.data.entries;
+    const anyPoints = entries.some(function (entry) {
+      return entry.points > 0;
+    });
+    if (!entries.length) {
+      body = '<section class="card state state-compact"><h3>The board is clean</h3><p>Nobody is on the league yet. Add roommates and the first points land here.</p></section>';
+    } else {
+      body = (anyPoints
+        ? renderPodium(entries)
+        : '<section class="card state state-compact"><h3>' + (league.period === 'month' ? 'A fresh month, a clean slate' : 'The league is waiting for its first points') + '</h3>' +
+          '<p>Mark a turn as cleaned and the first points land here.</p></section>') +
+        '<section class="card league-card" aria-labelledby="league-standings">' +
+        '<h3 class="eyebrow section-title" id="league-standings">' + icon('trophy') + (league.period === 'month' ? escapeHtml(leagueMonthLabel(league.data.month)) : 'Since the beginning') + '</h3>' +
+        renderStandings(entries) + '</section>' +
+        '<p class="footnote">On time: 15 points. Late: 10. A vacation skip costs you nothing.</p>';
+    }
+  } else if (league.status === 'error' || league.status === 'network') {
+    body = '<section class="card state state-compact"><h3>Couldn’t load the league</h3><p>' +
+      (league.status === 'network' ? 'Check your connection and try again.' : 'Try again in a moment.') + '</p>' +
+      '<button class="button" type="button" data-action="retry-league">Try again</button></section>';
+  } else {
+    body = '<div role="status"><p class="eyebrow">Counting the points…</p><div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div></div>';
+  }
+  return renderLeaguePeriods(league.period) + body;
+}
+</script>
